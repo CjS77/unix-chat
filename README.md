@@ -109,9 +109,8 @@ connections. Multiple clients can connect simultaneously -- messages are relayed
 Options:
 
 - `--topic <name>` -- use a custom topic name instead of your username
-- `--password <pwd>` -- publish a password-protected session key so clients can connect without manual key exchange.
-  **Security note:** the password will be visible in the process listing (e.g. `ps aux`). For sensitive sessions, prefer
-  the key exchange workflow instead.
+- `--password <ENV_VAR>` -- read the password from the given environment variable and publish a password-protected session key so
+  clients can connect without manual key exchange.
 - `--world` -- set socket permissions to 0666 instead of group-restricted 0660
 
 ### Connect to a chat server
@@ -173,7 +172,7 @@ Received files are saved to `~/unix-chat/shared/<topic>/`.
 **Terminal 1 (alice) -- start with a password:**
 
 ```bash
-alice$ uc start --password s3cret
+alice$ UC_PASSWORD=s3cret uc start --password UC_PASSWORD
 Session key published (password-protected)
 Chat server started on /tmp/unix_chat_sockets/alice.sock
 Waiting for connections...
@@ -239,8 +238,8 @@ Connected to alice!
 - **No replay or reorder protection** -- AES-256-GCM provides per-message integrity and confidentiality, but there is no sequence
   numbering or replay detection. A local attacker with raw access to the Unix socket traffic could theoretically replay or reorder
   captured ciphertext.
-- **`--password` visible in process listing** -- when using `--password <pwd>` on the command line, the password is visible to other
-  local users via `ps`. Use an ENVAR when ussing `--password`.
+- **`--password` requires an environment variable** -- `--password` takes the name of an environment variable containing the password,
+  not the password itself. This avoids leaking the password in process listings (`ps aux`).
 - **1 MiB message limit** -- individual messages and file transfers are capped at 1 MiB.
 - **Socket creation race (TOCTOU)** -- a small window exists between removing a stale socket and binding a new one.  A local attacker
   who can write to the socket directory could theoretically exploit this to intercept connections. The window is very narrow and

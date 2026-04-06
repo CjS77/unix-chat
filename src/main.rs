@@ -17,7 +17,7 @@ struct Cli {
 enum Command {
     /// Start a chat server and wait for incoming connections
     Start {
-        /// Encrypt the session key with this password so clients can connect without key exchange
+        /// Environment variable that holds the password for encrypting the session key
         #[arg(long)]
         password: Option<String>,
         /// Topic name for the chat socket (defaults to your username)
@@ -62,11 +62,17 @@ fn main() {
 
     let result = match cli.command {
         Command::Start {
-            password,
+            password: password_var,
             topic,
             world,
             max_connections,
         } => {
+            let password = password_var.map(|var| {
+                std::env::var(&var).unwrap_or_else(|_| {
+                    eprintln!("Error: environment variable '{var}' is not set");
+                    std::process::exit(1);
+                })
+            });
             let topic = topic.unwrap_or_else(Topic::from_username);
             server::run(
                 password.as_deref(),
