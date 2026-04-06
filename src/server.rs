@@ -52,6 +52,7 @@ pub fn run(
     password: Option<&str>,
     topic: &Topic,
     world: bool,
+    max_connections: usize,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
     let username = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
@@ -135,6 +136,14 @@ pub fn run(
                         rapid_count = 0;
                     }
                     last_connect = now;
+
+                    if relay_accept.client_count() >= max_connections {
+                        eprintln!(
+                            "Connection rejected: max connections ({max_connections}) reached"
+                        );
+                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                        continue;
+                    }
 
                     let _ = stream.set_nonblocking(false);
                     relay_accept.add_client(stream);

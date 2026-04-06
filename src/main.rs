@@ -26,6 +26,9 @@ enum Command {
         /// Allow any local user to connect (socket mode 0666 instead of group-restricted 0660)
         #[arg(long)]
         world: bool,
+        /// Maximum number of simultaneous client connections
+        #[arg(long, default_value_t = 10)]
+        max_connections: usize,
     },
     /// Connect to a chat server
     Connect {
@@ -62,9 +65,16 @@ fn main() {
             password,
             topic,
             world,
+            max_connections,
         } => {
             let topic = topic.unwrap_or_else(Topic::from_username);
-            server::run(password.as_deref(), &topic, world, Arc::clone(&shutdown))
+            server::run(
+                password.as_deref(),
+                &topic,
+                world,
+                max_connections,
+                Arc::clone(&shutdown),
+            )
         }
         Command::Connect { ref name } => client::run(name, Arc::clone(&shutdown)),
         Command::List => list::run(),

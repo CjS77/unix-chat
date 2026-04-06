@@ -3,17 +3,19 @@ use hkdf::Hkdf;
 use hmac::Hmac;
 use rand::RngCore;
 use sha2::Sha256;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::error::{ChatError, Result};
 
 const NONCE_LEN: usize = 12;
 const KEY_LEN: usize = 32;
 const SALT_LEN: usize = 16;
-const PBKDF2_ITERATIONS: u32 = 100_000;
-const PBKDF2_SALT: &[u8] = b"unix-chat-password-wrap";
+const PBKDF2_ITERATIONS: u32 = 600_000;
+const PBKDF2_DOMAIN_SEP: &[u8] = b"unix-chat-password-wrap";
 
 /// A session key with the salt used to derive it.
 /// The salt is needed for key exchange so the recipient can verify derivation.
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub struct SessionKey {
     pub key: [u8; KEY_LEN],
     pub salt: [u8; SALT_LEN],
@@ -47,19 +49,20 @@ impl SessionKey {
 
 /// Generate a session key by deriving from the SSH private key file.
 pub fn generate_session_key(ssh_key_path: &std::path::Path) -> Result<SessionKey> {
-    let ssh_key_bytes = std::fs::read(ssh_key_path).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => {
-            ChatError::SshKeyMissing(ssh_key_path.display().to_string())
-        }
-        std::io::ErrorKind::PermissionDenied => ChatError::PermissionDenied {
-            path: ssh_key_path.display().to_string(),
-            operation: "reading SSH key".into(),
-        },
-        _ => ChatError::Io {
-            context: format!("reading SSH key '{}'", ssh_key_path.display()),
-            source: e,
-        },
-    })?;
+    let ssh_key_bytes =
+        Zeroizing::new(std::fs::read(ssh_key_path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => {
+                ChatError::SshKeyMissing(ssh_key_path.display().to_string())
+            }
+            std::io::ErrorKind::PermissionDenied => ChatError::PermissionDenied {
+                path: ssh_key_path.display().to_string(),
+                operation: "reading SSH key".into(),
+            },
+            _ => ChatError::Io {
+                context: format!("reading SSH key '{}'", ssh_key_path.display()),
+                source: e,
+            },
+        })?);
 
     let mut salt = [0u8; SALT_LEN];
     rand::rng().fill_bytes(&mut salt);
@@ -144,23 +147,23 @@ pub fn decrypt(key: &[u8; KEY_LEN], data: &[u8]) -> Result<(String, Vec<u8>)> {
 /// Encrypt a session key with a password for publishing.
 /// Returns base64-encoded blob.
 pub fn wrap_key_with_password(session_key: &SessionKey, password: &str) -> Result<String> {
-    let mut derived = [0u8; KEY_LEN];
+    let mut derived = Zeroizing::new([0u8; KEY_LEN]);
     pbkdf2::pbkdf2::<Hmac<Sha256>>(
         password.as_bytes(),
-        PBKDF2_SALT,
+        PBKDF2_DOMAIN_SEP,
         PBKDF2_ITERATIONS,
-        &mut derived,
+        derived.as_mut(),
     )
     .map_err(|e| ChatError::Crypto(format!("PBKDF2 failed: {e}")))?;
 
-    let cipher = Aes256Gcm::new_from_slice(&derived)
+    let cipher = Aes256Gcm::new_from_slice(derived.as_ref())
         .map_err(|e| ChatError::Crypto(format!("Failed to create cipher: {e}")))?;
 
     let mut nonce_bytes = [0u8; NONCE_LEN];
     rand::rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
-    let plaintext = session_key.to_bytes();
+    let plaintext = Zeroizing::new(session_key.to_bytes());
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_slice())
         .map_err(|e| ChatError::Crypto(format!("Key wrapping failed: {e}")))?;
@@ -184,19 +187,19 @@ pub fn unwrap_key_with_password(encoded: &str, password: &str) -> Result<Session
         return Err(ChatError::Crypto("Wrapped key data too short".into()));
     }
 
-    let mut derived = [0u8; KEY_LEN];
+    let mut derived = Zeroizing::new([0u8; KEY_LEN]);
     pbkdf2::pbkdf2::<Hmac<Sha256>>(
         password.as_bytes(),
-        PBKDF2_SALT,
+        PBKDF2_DOMAIN_SEP,
         PBKDF2_ITERATIONS,
-        &mut derived,
+        derived.as_mut(),
     )
     .map_err(|e| ChatError::Crypto(format!("PBKDF2 failed: {e}")))?;
 
     let (nonce_bytes, ciphertext) = data.split_at(NONCE_LEN);
     let nonce = Nonce::from_slice(nonce_bytes);
 
-    let cipher = Aes256Gcm::new_from_slice(&derived)
+    let cipher = Aes256Gcm::new_from_slice(derived.as_ref())
         .map_err(|e| ChatError::Crypto(format!("Failed to create cipher: {e}")))?;
 
     let plaintext = cipher

@@ -1,4 +1,5 @@
-use std::io::{BufRead, BufReader};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::Arc;
@@ -168,7 +169,7 @@ fn send_file(
 fn sanitize_for_terminal(input: &str) -> String {
     input
         .chars()
-        .filter(|&c| c == '\n' || (c >= ' ' && c != '\x7f'))
+        .filter(|&c| c == '\n' || (c >= ' ' && c != '\x7f' && c != '\r'))
         .collect()
 }
 
@@ -230,6 +231,32 @@ fn socket_reader(
     }
 }
 
+/// Create a new file that does not overwrite any existing file.
+/// Tries `name`, then `stem-1.ext`, `stem-2.ext`, etc.
+/// Uses `create_new` (O_EXCL) so the creation is race-free.
+fn create_unique_file(dir: &Path, name: &str) -> Option<(File, std::path::PathBuf)> {
+    let path = dir.join(name);
+    if let Ok(f) = File::create_new(&path) {
+        return Some((f, path));
+    }
+    let stem = Path::new(name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(name);
+    let ext = Path::new(name).extension().and_then(|s| s.to_str());
+    for n in 1..1000u32 {
+        let candidate = match ext {
+            Some(e) => format!("{stem}-{n}.{e}"),
+            None => format!("{stem}-{n}"),
+        };
+        let path = dir.join(&candidate);
+        if let Ok(f) = File::create_new(&path) {
+            return Some((f, path));
+        }
+    }
+    None
+}
+
 fn handle_received_file(sender: &str, payload: &[u8], topic: &str) {
     if payload.len() < 2 {
         eprintln!("{COLOR_SYSTEM}Malformed file message: too short{COLOR_RESET}");
@@ -283,8 +310,17 @@ fn handle_received_file(sender: &str, payload: &[u8], topic: &str) {
         return;
     }
 
-    let dest = dir.join(safe_name);
-    if let Err(e) = std::fs::write(&dest, content) {
+    let (mut file, dest) = match create_unique_file(&dir, safe_name) {
+        Some(pair) => pair,
+        None => {
+            eprintln!(
+                "{COLOR_SYSTEM}Cannot create file '{safe_name}' in '{}'{COLOR_RESET}",
+                dir.display()
+            );
+            return;
+        }
+    };
+    if let Err(e) = file.write_all(content) {
         eprintln!(
             "{COLOR_SYSTEM}Cannot write file '{}': {e}{COLOR_RESET}",
             dest.display()

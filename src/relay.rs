@@ -25,6 +25,11 @@ impl Relay {
         })
     }
 
+    /// Number of currently connected clients.
+    pub fn client_count(&self) -> usize {
+        self.clients.lock().unwrap().len()
+    }
+
     /// Register a new stream. Spawns a reader thread that forwards every
     /// incoming message to all *other* registered streams.
     pub fn add_client(self: &Arc<Self>, stream: UnixStream) {

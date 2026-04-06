@@ -1,7 +1,7 @@
 # unix-chat
 
 A peer-to-peer encrypted chat system for local users on the same machine, using Unix sockets and AES-256-GCM symmetric encryption with SSH
-key-based key derivation.
+key-based key derivation. Supports multiple simultaneous clients with message relay, and file transfer.
 
 ## How it works
 
@@ -10,6 +10,9 @@ key-based key derivation.
 unix-chat uses **Unix domain sockets** in `/tmp/unix_chat_sockets/` for inter-process communication between users on the same host. Access
 control is managed via a `unixchat` system group -- users in this group can create and connect to chat sockets. An `--world` flag is
 available to bypass group restrictions.
+
+The server accepts **multiple simultaneous clients**. A relay layer broadcasts each incoming message to all other connected participants,
+enabling group chat. The server operator also participates in the chat as a regular client.
 
 ### Encryption
 
@@ -27,16 +30,43 @@ shared password instead of performing a key exchange.
 
 Before two users can chat (without password mode), they must share the same session key. The `share-key` / `receive-key` commands set up a
 temporary Unix socket (`/tmp/unix_chat_sockets/key_exchange_<pid>.sock`) to transfer the raw session key bytes from the server operator to
-another user.
+another user. Both sides display a short authentication string (SAS) that should be compared out-of-band to confirm the exchange was not
+tampered with.
 
-### Message protocol
+### Wire protocol
 
-Messages are framed as length-prefixed packets: a 4-byte big-endian length followed by the encrypted payload. The plaintext format embeds
-the sender's username (1-byte length prefix + username bytes + message body), so the recipient knows who sent each message.
+Messages are framed as **type-tagged, length-prefixed** packets:
 
 ```
-User A (stdin) --> AES-256-GCM encrypt --> unix socket --> AES-256-GCM decrypt --> User B (stdout)
-User B (stdin) --> AES-256-GCM encrypt --> unix socket --> AES-256-GCM decrypt --> User A (stdout)
+[2 bytes: MessageType (big-endian u16)]
+[4 bytes: Payload length (big-endian u32)]
+[N bytes: Encrypted payload]
+```
+
+**Message types:**
+
+| Type ID  | Name    | Description                      |
+|----------|---------|----------------------------------|
+| `0x0001` | Text    | Chat message                     |
+| `0x0002` | File    | File transfer (via `/share`)     |
+
+Unknown message types are preserved for forward compatibility.
+
+The maximum payload size is **1 MiB** (1,048,576 bytes).
+
+**Plaintext format** (before encryption): `[1 byte: username length][username bytes][message body]`
+
+**File payload format**: `[2 bytes BE: filename length][filename bytes][file content]`
+
+**Encryption layer**: Each payload is encrypted with AES-256-GCM. The wire format for encrypted data is `[12-byte nonce][ciphertext + 16-byte GCM tag]`.
+
+```
+User A (stdin) --> AES-256-GCM encrypt --> [type|len|payload] --> unix socket
+                                                                     |
+                                                                   relay
+                                                                     |
+                                           [type|len|payload] --> AES-256-GCM decrypt --> User B (stdout)
+                                           [type|len|payload] --> AES-256-GCM decrypt --> User C (stdout)
 ```
 
 ## Installation
@@ -45,14 +75,14 @@ User B (stdin) --> AES-256-GCM encrypt --> unix socket --> AES-256-GCM decrypt -
 cargo install --path .
 ```
 
-Requires Rust 2024 edition (1.85+).
+Requires Rust 2024 edition (1.85+). The binary is called `uc`.
 
 ## Setup
 
-Run `unix-chat init` to check your environment, generate the required SSH key, and configure group membership:
+Run `uc init` to check your environment, generate the required SSH key, and configure group membership:
 
 ```bash
-unix-chat init
+uc init
 ```
 
 This will:
@@ -64,17 +94,17 @@ This will:
 ## Usage
 
 ```
-unix-chat {start|connect <name>|list|share-key <username>|receive-key <pid>|init}
+uc {start|connect <name>|list|share-key <username>|receive-key <pid>|init}
 ```
 
 ### Start a chat server
 
 ```bash
-unix-chat start
+uc start
 ```
 
 Creates a socket at `/tmp/unix_chat_sockets/<username>.sock`, derives an encryption key from your SSH key, and waits for incoming
-connections. The server survives client disconnects and accepts new connections.
+connections. Multiple clients can connect simultaneously -- messages are relayed to all participants.
 
 Options:
 
@@ -87,7 +117,7 @@ Options:
 ### Connect to a chat server
 
 ```bash
-unix-chat connect alice
+uc connect alice
 ```
 
 Connects to the socket for the given topic/username. The client resolves the session key by checking (in order):
@@ -98,7 +128,7 @@ Connects to the socket for the given topic/username. The client resolves the ses
 ### List available chat servers
 
 ```bash
-unix-chat list
+uc list
 ```
 
 Scans `/tmp/unix_chat_sockets/` for active `.sock` files and prints available topics.
@@ -106,10 +136,11 @@ Scans `/tmp/unix_chat_sockets/` for active `.sock` files and prints available to
 ### Share your encryption key
 
 ```bash
-unix-chat share-key bob
+uc share-key bob
 ```
 
-Opens a one-shot key exchange socket and waits for the recipient to connect and retrieve the session key.
+Opens a one-shot key exchange socket and waits for the recipient to connect and retrieve the session key. Both sides display a
+short authentication string (SAS) for out-of-band verification.
 
 Options:
 
@@ -119,7 +150,7 @@ Options:
 
 ```bash
 # Using the PID printed by the sender:
-unix-chat receive-key 12345
+uc receive-key 12345
 ```
 
 Connects to the sender's key exchange socket, downloads the session key, and saves it to `/tmp/.unix_chat_received_key_<username>`.
@@ -128,18 +159,21 @@ Connects to the sender's key exchange socket, downloads the session key, and sav
 
 While chatting, the following slash commands are available:
 
-| Command   | Description             |
-|-----------|-------------------------|
-| `/help`   | Show available commands |
-| `/whoami` | Print your username     |
-| `/quit`   | Exit the chat           |
+| Command          | Description                                          |
+|------------------|------------------------------------------------------|
+| `/help`          | Show available commands                              |
+| `/share <file>`  | Send a file to all connected participants            |
+| `/whoami`        | Print your username                                  |
+| `/quit`          | Exit the chat                                        |
+
+Received files are saved to `~/unix-chat/shared/<topic>/`.
 
 ## Example session
 
 **Terminal 1 (alice) -- start with a password:**
 
 ```bash
-alice$ unix-chat start --password s3cret
+alice$ uc start --password s3cret
 Session key published (password-protected)
 Chat server started on /tmp/unix_chat_sockets/alice.sock
 Waiting for connections...
@@ -148,7 +182,7 @@ Waiting for connections...
 **Terminal 2 (bob) -- connect with the password:**
 
 ```bash
-bob$ unix-chat connect alice
+bob$ uc connect alice
 Session password: s3cret
 Decrypting session key.. OK!
 Connected to alice!
@@ -156,20 +190,40 @@ Connected to alice!
 bob> hello alice!
 ```
 
+**Terminal 3 (charlie) -- another participant joins:**
+
+```bash
+charlie$ uc connect alice
+Session password: s3cret
+Decrypting session key.. OK!
+Connected to alice!
+
+charlie> hey everyone!
+```
+
+**Sharing a file:**
+
+```bash
+bob> /share notes.txt
+File sent: notes.txt (1234 bytes)
+```
+
+Alice and charlie each receive `notes.txt` saved to `~/unix-chat/shared/alice/notes.txt`.
+
 **Alternative: manual key exchange (no password)**
 
 ```bash
 # Alice starts without --password
-alice$ unix-chat start
+alice$ uc start
 # Alice shares her key
-alice$ unix-chat share-key bob
+alice$ uc share-key bob
 Waiting for bob to receive the key...
-On bob's terminal, run: unix-chat receive-key 54321
+On bob's terminal, run: uc receive-key 54321
 
 # Bob receives and connects
-bob$ unix-chat receive-key 54321
+bob$ uc receive-key 54321
 Encryption key received and saved
-bob$ unix-chat connect alice
+bob$ uc connect alice
 Connected to alice!
 ```
 
@@ -180,7 +234,6 @@ Connected to alice!
   not identity verification. The username embedded in encrypted messages is self-asserted and can be spoofed by anyone holding the
   session key. The `share-key` / `receive-key` commands display a short verification code that both parties should compare out-of-band
   to confirm they exchanged keys with the intended peer.
-- **Single client** -- the server handles one connected client at a time. A new client can connect after the previous one disconnects.
 - **USER env var trusted for identity** -- the `USER` environment variable determines the local username displayed in chat. This can
   be overridden by any process and should not be relied upon for authentication.
 - **No replay or reorder protection** -- AES-256-GCM provides per-message integrity and confidentiality, but there is no sequence
@@ -188,3 +241,10 @@ Connected to alice!
   captured ciphertext.
 - **`--password` visible in process listing** -- when using `--password <pwd>` on the command line, the password is visible to other
   local users via `ps`. Prefer key exchange for sensitive sessions.
+- **1 MiB message limit** -- individual messages and file transfers are capped at 1 MiB.
+- **Socket creation race (TOCTOU)** -- a small window exists between removing a stale socket and binding a new one.  A local attacker
+  who can write to the socket directory could theoretically exploit this to intercept connections. The window is very narrow and
+  requires precise timing.
+- **File receive directory race** -- when receiving a file, the save directory is created and then the file is written as two separate
+  operations. Between these steps the directory could theoretically be replaced with a symlink by another local process, though the
+  filename itself is sanitized to a basename.

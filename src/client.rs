@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use zeroize::Zeroizing;
+
 use crate::chat_loop;
 use crate::config::SOCKET_DIR;
 use crate::crypto::{self, SessionKey};
@@ -27,9 +29,14 @@ pub fn run(topic: &Topic, shutdown: Arc<AtomicBool>) -> Result<()> {
         key
     } else if received_key_path.exists() {
         // Key was received via key exchange
-        let data = std::fs::read(&received_key_path)
-            .io_path_context(&received_key_path, "reading received key from")?;
-        SessionKey::from_bytes(&data)?
+        let data = Zeroizing::new(
+            std::fs::read(&received_key_path)
+                .io_path_context(&received_key_path, "reading received key from")?,
+        );
+        let key = SessionKey::from_bytes(&data)?;
+        // Clean up the key file now that it has been loaded
+        let _ = std::fs::remove_file(&received_key_path);
+        key
     } else {
         return Err(ChatError::KeyNotFound(format!(
             "No session key found for {topic}. Use '{topic}'s --password option, or run 'uc receive-key <pid>' first."
@@ -59,15 +66,8 @@ pub fn run(topic: &Topic, shutdown: Arc<AtomicBool>) -> Result<()> {
 }
 
 /// Read a password from the terminal without echoing.
-/// Falls back to simple line read if terminal control is unavailable.
-fn read_password(prompt: &str) -> Result<String> {
+fn read_password(prompt: &str) -> Result<Zeroizing<String>> {
     eprint!("{prompt}");
-
-    // Try to disable echo for password input
-    let mut password = String::new();
-    std::io::stdin()
-        .read_line(&mut password)
-        .io_context("reading password from stdin")?;
-    eprintln!(); // newline after password
-    Ok(password.trim().to_string())
+    let password = rpassword::read_password().io_context("reading password from stdin")?;
+    Ok(Zeroizing::new(password))
 }

@@ -42,7 +42,14 @@ pub fn group_exists() -> bool {
 /// Otherwise it falls back to 0755 and prints a warning.
 pub fn ensure_socket_dir() -> Result<()> {
     let dir = Path::new(SOCKET_DIR);
-    std::fs::create_dir_all(dir).io_path_context(dir, "creating socket directory")?;
+
+    // Create with a restrictive umask (owner-only) so no window exists where
+    // the directory is world-accessible before we set final permissions.
+    // SAFETY: umask is always safe; we restore the original value immediately.
+    let old_mask = unsafe { libc::umask(0o077) };
+    let create_result = std::fs::create_dir_all(dir);
+    unsafe { libc::umask(old_mask) };
+    create_result.io_path_context(dir, "creating socket directory")?;
 
     if let Some(gid) = get_group_gid(SOCKET_GROUP) {
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o770))

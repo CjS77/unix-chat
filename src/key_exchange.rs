@@ -98,12 +98,27 @@ pub fn receive_key(pid: u32) -> Result<()> {
 
     let session_key = crypto::SessionKey::from_bytes(&buf)?;
 
-    // Save the raw key bytes with restricted permissions atomically
+    // Save the raw key bytes with restricted permissions.
+    // Use create_new (O_EXCL) to avoid following symlinks planted by an attacker.
     let save_path = PathBuf::from(format!("/tmp/.unix_chat_received_key_{own_username}"));
+    if let Ok(meta) = std::fs::symlink_metadata(&save_path) {
+        if meta.file_type().is_symlink() {
+            return Err(ChatError::Io {
+                context: format!(
+                    "'{}' is a symlink -- refusing to write (possible attack)",
+                    save_path.display()
+                ),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "symlink at key path",
+                ),
+            });
+        }
+        std::fs::remove_file(&save_path).io_path_context(&save_path, "removing old key file")?;
+    }
     let mut file = std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
         .open(&save_path)
         .io_path_context(&save_path, "saving received key to")?;

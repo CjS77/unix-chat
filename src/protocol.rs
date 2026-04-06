@@ -35,6 +35,12 @@ impl From<u16> for MessageType {
 /// Write a typed, length-prefixed message to the stream.
 /// Format: [2 bytes BE u16 type][4 bytes BE u32 length][payload]
 pub fn write_message(stream: &mut impl Write, msg_type: MessageType, payload: &[u8]) -> Result<()> {
+    if payload.len() > MAX_MESSAGE_SIZE as usize {
+        return Err(ChatError::Crypto(format!(
+            "Message too large to send: {} bytes (max {MAX_MESSAGE_SIZE})",
+            payload.len()
+        )));
+    }
     let len = payload.len() as u32;
     stream.write_all(&msg_type.to_u16().to_be_bytes())?;
     stream.write_all(&len.to_be_bytes())?;
