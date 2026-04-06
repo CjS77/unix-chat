@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.10.1 (2026-04-06)
+
+- doc: add cargo fields
+
 ## v0.10.0 (2026-04-06)
 
 - feat: readline prompt with history and tab completion

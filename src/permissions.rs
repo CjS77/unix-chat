@@ -52,9 +52,22 @@ pub fn ensure_socket_dir() -> Result<()> {
     create_result.io_path_context(dir, "creating socket directory")?;
 
     if let Some(gid) = get_group_gid(SOCKET_GROUP) {
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o770))
-            .io_path_context(dir, "setting permissions on socket directory")?;
-        set_group_owner(dir, gid)?;
+        // Only set permissions/ownership if they differ from the desired state.
+        // On Linux, only the directory owner (or root) can chmod/chown, so a
+        // second user in the group would get EPERM if we always called these.
+        let meta =
+            std::fs::metadata(dir).io_path_context(dir, "reading metadata of socket directory")?;
+        if meta.permissions().mode() & 0o7777 != 0o770 {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o770))
+                .io_path_context(dir, "setting permissions on socket directory")?;
+        }
+        #[cfg(target_os = "linux")]
+        use std::os::linux::fs::MetadataExt;
+        #[cfg(target_os = "macos")]
+        use std::os::macos::fs::MetadataExt;
+        if meta.st_gid() != gid {
+            set_group_owner(dir, gid)?;
+        }
     } else {
         // No group — make directory world-accessible so other users can still
         // connect when using --world mode or after key exchange.
