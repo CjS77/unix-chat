@@ -240,7 +240,7 @@ Connected to alice!
   numbering or replay detection. A local attacker with raw access to the Unix socket traffic could theoretically replay or reorder
   captured ciphertext.
 - **`--password` visible in process listing** -- when using `--password <pwd>` on the command line, the password is visible to other
-  local users via `ps`. Prefer key exchange for sensitive sessions.
+  local users via `ps`. Use an ENVAR when ussing `--password`.
 - **1 MiB message limit** -- individual messages and file transfers are capped at 1 MiB.
 - **Socket creation race (TOCTOU)** -- a small window exists between removing a stale socket and binding a new one.  A local attacker
   who can write to the socket directory could theoretically exploit this to intercept connections. The window is very narrow and
