@@ -154,6 +154,7 @@ pub fn run(
         operator_stream,
         &session_key.key,
         &username,
+        topic.as_str(),
         Arc::clone(&shutdown),
     );
 

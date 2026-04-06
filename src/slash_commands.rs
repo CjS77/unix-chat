@@ -5,10 +5,12 @@ const COLOR_RESET: &str = "\x1b[0m";
 pub enum Action {
     /// Continue the chat loop.
     Continue,
-    /// The test was handled as a command
+    /// The command was handled as a command
     Handled,
     /// Exit the chat loop.
     Quit,
+    /// Share a file with the given path.
+    ShareFile(String),
 }
 
 /// Try to handle `line` as a slash command.
@@ -21,15 +23,26 @@ pub fn try_execute(line: &str, username: &str) -> Action {
     execute_slash_command(trimmed, username)
 }
 
-fn execute_slash_command(command: &str, username: &str) -> Action {
-    let command = command.split_whitespace().next().unwrap_or("");
+fn execute_slash_command(input: &str, username: &str) -> Action {
+    let mut parts = input.split_whitespace();
+    let command = parts.next().unwrap_or("");
     match command {
         "/help" => {
             println!("{COLOR_SYSTEM}Available commands:");
-            println!("  /help   - Show this help message");
-            println!("  /whoami - Print your username");
-            println!("  /quit   - Exit the chat{COLOR_RESET}");
+            println!("  /help            - Show this help message");
+            println!("  /share <file>    - Share a file with the chat");
+            println!("  /whoami          - Print your username");
+            println!("  /quit            - Exit the chat{COLOR_RESET}");
             Action::Handled
+        }
+        "/share" => {
+            let filename: String = parts.collect::<Vec<_>>().join(" ");
+            if filename.is_empty() {
+                println!("{COLOR_SYSTEM}Usage: /share <filename>{COLOR_RESET}");
+                Action::Handled
+            } else {
+                Action::ShareFile(filename)
+            }
         }
         "/whoami" => {
             println!("{COLOR_SYSTEM}{username}{COLOR_RESET}");

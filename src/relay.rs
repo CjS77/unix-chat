@@ -60,7 +60,7 @@ impl Relay {
                 break;
             }
             match protocol::read_message(&mut reader) {
-                Ok(Some(data)) => self.broadcast(&data, id),
+                Ok(Some((msg_type, data))) => self.broadcast(msg_type, &data, id),
                 Ok(None) => break,
                 Err(e) => {
                     if self.shutdown.load(Ordering::Relaxed)
@@ -73,14 +73,14 @@ impl Relay {
         }
     }
 
-    fn broadcast(&self, data: &[u8], sender_id: usize) {
+    fn broadcast(&self, msg_type: protocol::MessageType, data: &[u8], sender_id: usize) {
         let mut clients = self.clients.lock().unwrap();
         let mut dead = Vec::new();
         for (&id, stream) in clients.iter_mut() {
             if id == sender_id {
                 continue;
             }
-            if protocol::write_message(stream, data).is_err() {
+            if protocol::write_message(stream, msg_type, data).is_err() {
                 dead.push(id);
             }
         }

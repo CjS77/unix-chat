@@ -1,11 +1,13 @@
 use std::io::{BufRead, BufReader};
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use crate::crypto;
 use crate::protocol;
+use crate::protocol::MessageType;
 use crate::signal;
 use crate::slash_commands;
 use crate::slash_commands::Action;
@@ -18,7 +20,13 @@ const COLOR_SYSTEM: &str = "\x1b[33m"; // Yellow for system messages
 
 /// Run the bidirectional chat loop over an established Unix stream.
 /// Blocks until the connection is closed or an error occurs.
-pub fn run(stream: UnixStream, key: &[u8; 32], username: &str, shutdown: Arc<AtomicBool>) {
+pub fn run(
+    stream: UnixStream,
+    key: &[u8; 32],
+    username: &str,
+    topic: &str,
+    shutdown: Arc<AtomicBool>,
+) {
     let write_stream = match stream.try_clone() {
         Ok(s) => s,
         Err(e) => {
@@ -31,12 +39,19 @@ pub fn run(stream: UnixStream, key: &[u8; 32], username: &str, shutdown: Arc<Ato
     let shutdown_tx = Arc::clone(&shutdown);
     let key_copy = *key;
     let username_owned = username.to_string();
+    let topic_owned = topic.to_string();
     let stdin_handle = thread::spawn(move || {
-        stdin_writer(write_stream, &key_copy, &username_owned, &shutdown_tx);
+        stdin_writer(
+            write_stream,
+            &key_copy,
+            &username_owned,
+            &topic_owned,
+            &shutdown_tx,
+        );
     });
 
     // Main thread: reads from socket, decrypts, prints
-    socket_reader(&stream, key, username, &shutdown);
+    socket_reader(&stream, key, username, topic, &shutdown);
 
     // Signal stdin thread to stop and wait for it
     shutdown.store(true, Ordering::Relaxed);
@@ -46,7 +61,13 @@ pub fn run(stream: UnixStream, key: &[u8; 32], username: &str, shutdown: Arc<Ato
     let _ = stdin_handle.join();
 }
 
-fn stdin_writer(mut stream: UnixStream, key: &[u8; 32], username: &str, shutdown: &AtomicBool) {
+fn stdin_writer(
+    mut stream: UnixStream,
+    key: &[u8; 32],
+    username: &str,
+    topic: &str,
+    shutdown: &AtomicBool,
+) {
     let stdin = std::io::stdin();
     let reader = BufReader::new(stdin.lock());
 
@@ -64,6 +85,7 @@ fn stdin_writer(mut stream: UnixStream, key: &[u8; 32], username: &str, shutdown
             Action::Continue => print_message(&mut stream, key, username, &line),
             Action::Handled => continue,
             Action::Quit => break,
+            Action::ShareFile(filename) => send_file(&mut stream, key, username, topic, &filename),
         }
     }
 
@@ -84,9 +106,61 @@ fn print_message(stream: &mut UnixStream, key: &[u8; 32], username: &str, line: 
         }
     };
 
-    if let Err(e) = protocol::write_message(stream, &encrypted) {
+    if let Err(e) = protocol::write_message(stream, MessageType::Text, &encrypted) {
         eprintln!("{e}");
     }
+}
+
+fn send_file(
+    stream: &mut UnixStream,
+    key: &[u8; 32],
+    username: &str,
+    _topic: &str,
+    filename: &str,
+) {
+    let path = Path::new(filename);
+    let basename = match path.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n,
+        None => {
+            eprintln!("{COLOR_SYSTEM}Invalid filename: {filename}{COLOR_RESET}");
+            return;
+        }
+    };
+
+    let content = match std::fs::read(path) {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("{COLOR_SYSTEM}Cannot read '{filename}': {e}{COLOR_RESET}");
+            return;
+        }
+    };
+
+    let basename_bytes = basename.as_bytes();
+    if basename_bytes.len() > u16::MAX as usize {
+        eprintln!("{COLOR_SYSTEM}Filename too long{COLOR_RESET}");
+        return;
+    }
+
+    // Build file payload: [u16 BE filename_len][filename][content]
+    let mut payload = Vec::with_capacity(2 + basename_bytes.len() + content.len());
+    payload.extend_from_slice(&(basename_bytes.len() as u16).to_be_bytes());
+    payload.extend_from_slice(basename_bytes);
+    payload.extend_from_slice(&content);
+
+    let encrypted = match crypto::encrypt(key, username, &payload) {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("{COLOR_SYSTEM}Encryption error: {e}{COLOR_RESET}");
+            return;
+        }
+    };
+
+    if let Err(e) = protocol::write_message(stream, MessageType::File, &encrypted) {
+        eprintln!("{COLOR_SYSTEM}Send error: {e}{COLOR_RESET}");
+        return;
+    }
+
+    println!("{COLOR_SYSTEM}[you shared {basename}]{COLOR_RESET}");
 }
 
 /// Strip control characters that could manipulate the terminal.
@@ -98,7 +172,13 @@ fn sanitize_for_terminal(input: &str) -> String {
         .collect()
 }
 
-fn socket_reader(stream: &UnixStream, key: &[u8; 32], own_username: &str, shutdown: &AtomicBool) {
+fn socket_reader(
+    stream: &UnixStream,
+    key: &[u8; 32],
+    own_username: &str,
+    topic: &str,
+    shutdown: &AtomicBool,
+) {
     let mut reader = BufReader::new(stream);
 
     loop {
@@ -107,7 +187,7 @@ fn socket_reader(stream: &UnixStream, key: &[u8; 32], own_username: &str, shutdo
         }
 
         match protocol::read_message(&mut reader) {
-            Ok(Some(data)) => match crypto::decrypt(key, &data) {
+            Ok(Some((MessageType::Text, data))) => match crypto::decrypt(key, &data) {
                 Ok((sender, message)) => {
                     let msg_str = String::from_utf8_lossy(&message);
                     let safe_msg = sanitize_for_terminal(&msg_str);
@@ -123,6 +203,19 @@ fn socket_reader(stream: &UnixStream, key: &[u8; 32], own_username: &str, shutdo
                     eprintln!("{COLOR_SYSTEM}Decryption error: {e}{COLOR_RESET}");
                 }
             },
+            Ok(Some((MessageType::File, data))) => match crypto::decrypt(key, &data) {
+                Ok((sender, file_payload)) => {
+                    handle_received_file(&sender, &file_payload, topic);
+                }
+                Err(e) => {
+                    eprintln!("{COLOR_SYSTEM}Decryption error: {e}{COLOR_RESET}");
+                }
+            },
+            Ok(Some((MessageType::Unknown(t), _))) => {
+                eprintln!(
+                    "{COLOR_SYSTEM}Received unknown message type 0x{t:04X}, ignoring{COLOR_RESET}"
+                );
+            }
             Ok(None) => break, // Clean disconnect
             Err(e) => {
                 if !signal::shutdown_requested(shutdown) {
@@ -135,6 +228,75 @@ fn socket_reader(stream: &UnixStream, key: &[u8; 32], own_username: &str, shutdo
             }
         }
     }
+}
+
+fn handle_received_file(sender: &str, payload: &[u8], topic: &str) {
+    if payload.len() < 2 {
+        eprintln!("{COLOR_SYSTEM}Malformed file message: too short{COLOR_RESET}");
+        return;
+    }
+
+    let filename_len = u16::from_be_bytes([payload[0], payload[1]]) as usize;
+    if payload.len() < 2 + filename_len {
+        eprintln!("{COLOR_SYSTEM}Malformed file message: filename truncated{COLOR_RESET}");
+        return;
+    }
+
+    let filename = match std::str::from_utf8(&payload[2..2 + filename_len]) {
+        Ok(s) => s,
+        Err(_) => {
+            eprintln!(
+                "{COLOR_SYSTEM}Malformed file message: invalid filename encoding{COLOR_RESET}"
+            );
+            return;
+        }
+    };
+
+    // Sanitize: use only the basename, reject path traversal
+    let safe_name = match Path::new(filename).file_name().and_then(|n| n.to_str()) {
+        Some(n) if !n.is_empty() && n != ".." && n != "." => n,
+        _ => {
+            eprintln!("{COLOR_SYSTEM}Received file with invalid name, ignoring{COLOR_RESET}");
+            return;
+        }
+    };
+
+    let content = &payload[2 + filename_len..];
+
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => {
+            eprintln!("{COLOR_SYSTEM}HOME not set, cannot save file{COLOR_RESET}");
+            return;
+        }
+    };
+
+    let dir = Path::new(&home)
+        .join("unix-chat")
+        .join("shared")
+        .join(topic);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!(
+            "{COLOR_SYSTEM}Cannot create directory '{}': {e}{COLOR_RESET}",
+            dir.display()
+        );
+        return;
+    }
+
+    let dest = dir.join(safe_name);
+    if let Err(e) = std::fs::write(&dest, content) {
+        eprintln!(
+            "{COLOR_SYSTEM}Cannot write file '{}': {e}{COLOR_RESET}",
+            dest.display()
+        );
+        return;
+    }
+
+    let safe_sender = sanitize_for_terminal(sender);
+    println!(
+        "{COLOR_SYSTEM}[{safe_sender} shared {safe_name} -> {}]{COLOR_RESET}",
+        dest.display()
+    );
 }
 
 #[cfg(test)]

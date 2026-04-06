@@ -47,7 +47,13 @@ pub fn run(topic: &Topic, shutdown: Arc<AtomicBool>) -> Result<()> {
 
     println!("Connected to {topic}!\n");
 
-    chat_loop::run(stream, &session_key.key, &own_username, shutdown);
+    chat_loop::run(
+        stream,
+        &session_key.key,
+        &own_username,
+        topic.as_str(),
+        shutdown,
+    );
     println!("\nDisconnected.");
     Ok(())
 }
