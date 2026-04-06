@@ -7,7 +7,7 @@ use unix_chat::topic::Topic;
 use unix_chat::{client, init, key_exchange, list, permissions, server, signal};
 
 #[derive(Parser)]
-#[command(name = "uc", about = "Peer-to-peer encrypted chat for local users")]
+#[command(name = "uc", about = "Peer-to-peer encrypted chat for local users", version = env!("CARGO_PKG_VERSION"))]
 struct Cli {
     #[command(subcommand)]
     command: Command,

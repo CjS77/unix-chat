@@ -1,6 +1,10 @@
 # Changelog
 
-## v0.9.1 (2026-04-06)
+## v0.10.0 (2026-04-06)
+
+- feat: readline prompt with history and tab completion
+
+## v0.9.0 (2026-04-06)
 
 - feat: security hardening
 - feat: typed wire protocol and /share file transfer
