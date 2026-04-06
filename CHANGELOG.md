@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.11.0 (2026-04-06)
+
+- fix: prevent password exposure
+- docs: add cargo keywords
+- fix: permissions on socket directory
+
 ## v0.10.1 (2026-04-06)
 
 - doc: add cargo fields
