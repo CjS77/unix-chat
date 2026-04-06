@@ -16,7 +16,10 @@ fn is_valid_char(c: char) -> bool {
 }
 
 fn sanitize(s: &str) -> String {
-    s.chars().filter(|c| is_valid_char(*c)).take(MAX_LEN).collect()
+    s.chars()
+        .filter(|c| is_valid_char(*c))
+        .take(MAX_LEN)
+        .collect()
 }
 
 impl Topic {
@@ -24,7 +27,11 @@ impl Topic {
     pub fn from_username() -> Self {
         let username = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
         let sanitised = sanitize(&username);
-        Topic(if sanitised.is_empty() { "unknown".into() } else { sanitised })
+        Topic(if sanitised.is_empty() {
+            "unknown".into()
+        } else {
+            sanitised
+        })
     }
 
     pub fn as_str(&self) -> &str {
@@ -44,10 +51,15 @@ impl FromStr for Topic {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let sanitised = sanitize(s);
         if sanitised.is_empty() {
-            return Err("topic must contain at least one alphanumeric character, hyphen, or underscore".into());
+            return Err(
+                "topic must contain at least one alphanumeric character, hyphen, or underscore"
+                    .into(),
+            );
         }
         if sanitised != s {
-            return Err(format!("topic contains invalid characters; did you mean '{sanitised}'?"));
+            return Err(format!(
+                "topic contains invalid characters; did you mean '{sanitised}'?"
+            ));
         }
         Ok(Topic(sanitised))
     }
@@ -100,6 +112,9 @@ mod tests {
     #[test]
     fn suggests_sanitised_name() {
         let err = "my room!".parse::<Topic>().unwrap_err();
-        assert!(err.contains("myroom"), "should suggest sanitised name, got: {err}");
+        assert!(
+            err.contains("myroom"),
+            "should suggest sanitised name, got: {err}"
+        );
     }
 }

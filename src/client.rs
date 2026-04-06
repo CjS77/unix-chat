@@ -1,10 +1,10 @@
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
+use crate::chat_loop;
 use crate::config::SOCKET_DIR;
 use crate::crypto::{self, SessionKey};
 use crate::error::{ChatError, IoResultExt, Result};
-use crate::chat_loop;
 use crate::topic::Topic;
 
 pub fn run(topic: &Topic) -> Result<()> {
@@ -30,12 +30,14 @@ pub fn run(topic: &Topic) -> Result<()> {
         SessionKey::from_bytes(&data)?
     } else {
         return Err(ChatError::KeyNotFound(format!(
-            "No session key found for {topic}. Use '{topic}'s --password option, or run 'unix-chat receive-key <pid>' first."
+            "No session key found for {topic}. Use '{topic}'s --password option, or run 'uc receive-key <pid>' first."
         )));
     };
 
     if !socket_path.exists() {
-        return Err(ChatError::ConnectionRefused(format!("{topic} is not running a chat server")));
+        return Err(ChatError::ConnectionRefused(format!(
+            "{topic} is not running a chat server"
+        )));
     }
 
     let stream = UnixStream::connect(&socket_path)
@@ -55,7 +57,9 @@ fn read_password(prompt: &str) -> Result<String> {
 
     // Try to disable echo for password input
     let mut password = String::new();
-    std::io::stdin().read_line(&mut password).io_context("reading password from stdin")?;
+    std::io::stdin()
+        .read_line(&mut password)
+        .io_context("reading password from stdin")?;
     eprintln!(); // newline after password
     Ok(password.trim().to_string())
 }

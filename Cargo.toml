@@ -3,6 +3,10 @@ name = "unix-chat"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "uc"
+path = "src/main.rs"
+
 [dependencies]
 aes-gcm = "0.10"
 base64 = "0.22"

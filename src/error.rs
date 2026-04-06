@@ -2,8 +2,14 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum ChatError {
-    Io { source: std::io::Error, context: String },
-    PermissionDenied { path: String, operation: String },
+    Io {
+        source: std::io::Error,
+        context: String,
+    },
+    PermissionDenied {
+        path: String,
+        operation: String,
+    },
     Crypto(String),
     KeyNotFound(String),
     ConnectionRefused(String),
@@ -17,17 +23,26 @@ impl fmt::Display for ChatError {
             ChatError::Io { source, context } => write!(f, "{context}: {source}"),
             ChatError::PermissionDenied { path, operation } => {
                 write!(f, "Permission denied {operation} '{path}'.\n")?;
-                write!(f, "  Check that you have the correct file permissions and group membership.\n")?;
-                write!(f, "  Run 'unix-chat init' to diagnose your environment.")
+                write!(
+                    f,
+                    "  Check that you have the correct file permissions and group membership.\n"
+                )?;
+                write!(f, "  Run 'uc init' to diagnose your environment.")
             }
             ChatError::Crypto(msg) => write!(f, "Encryption error: {msg}"),
             ChatError::KeyNotFound(path) => write!(f, "Key file not found: {path}"),
             ChatError::ConnectionRefused(msg) => write!(f, "Connection refused: {msg}"),
             ChatError::InvalidPassword => {
-                write!(f, "Invalid password. Check that you're using the same password the server was started with.")
+                write!(
+                    f,
+                    "Invalid password. Check that you're using the same password the server was started with."
+                )
             }
             ChatError::SshKeyMissing(path) => {
-                write!(f, "SSH key not found at {path}. Run 'unix-chat init' to generate one.")
+                write!(
+                    f,
+                    "SSH key not found at {path}. Run 'uc init' to generate one."
+                )
             }
         }
     }
@@ -44,7 +59,10 @@ impl std::error::Error for ChatError {
 
 impl From<std::io::Error> for ChatError {
     fn from(e: std::io::Error) -> Self {
-        ChatError::Io { source: e, context: "I/O error".into() }
+        ChatError::Io {
+            source: e,
+            context: "I/O error".into(),
+        }
     }
 }
 
@@ -61,7 +79,10 @@ pub trait IoResultExt<T> {
 
 impl<T> IoResultExt<T> for std::io::Result<T> {
     fn io_context(self, context: impl Into<String>) -> Result<T> {
-        self.map_err(|e| ChatError::Io { source: e, context: context.into() })
+        self.map_err(|e| ChatError::Io {
+            source: e,
+            context: context.into(),
+        })
     }
 
     fn io_path_context(self, path: &std::path::Path, operation: &str) -> Result<T> {

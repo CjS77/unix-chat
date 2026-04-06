@@ -76,7 +76,9 @@ pub fn set_socket_permissions(path: &Path, world: bool) -> Result<()> {
             set_group_owner(path, gid)?;
         } else {
             let username = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
-            eprintln!("Warning: '{SOCKET_GROUP}' group not found. Socket is restricted to your user only.");
+            eprintln!(
+                "Warning: '{SOCKET_GROUP}' group not found. Socket is restricted to your user only."
+            );
             print_admin_instructions(&username, true);
         }
     }

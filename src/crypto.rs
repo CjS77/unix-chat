@@ -31,7 +31,11 @@ impl SessionKey {
     /// Deserialize from 48 bytes: salt || key
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         if bytes.len() != SALT_LEN + KEY_LEN {
-            return Err(ChatError::Crypto(format!("Invalid session key length: expected {}, got {}", SALT_LEN + KEY_LEN, bytes.len())));
+            return Err(ChatError::Crypto(format!(
+                "Invalid session key length: expected {}, got {}",
+                SALT_LEN + KEY_LEN,
+                bytes.len()
+            )));
         }
         let mut salt = [0u8; SALT_LEN];
         let mut key = [0u8; KEY_LEN];
@@ -44,7 +48,9 @@ impl SessionKey {
 /// Generate a session key by deriving from the SSH private key file.
 pub fn generate_session_key(ssh_key_path: &std::path::Path) -> Result<SessionKey> {
     let ssh_key_bytes = std::fs::read(ssh_key_path).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => ChatError::SshKeyMissing(ssh_key_path.display().to_string()),
+        std::io::ErrorKind::NotFound => {
+            ChatError::SshKeyMissing(ssh_key_path.display().to_string())
+        }
         std::io::ErrorKind::PermissionDenied => ChatError::PermissionDenied {
             path: ssh_key_path.display().to_string(),
             operation: "reading SSH key".into(),
@@ -71,7 +77,9 @@ pub fn generate_session_key(ssh_key_path: &std::path::Path) -> Result<SessionKey
 pub fn encrypt(key: &[u8; KEY_LEN], username: &str, message: &[u8]) -> Result<Vec<u8>> {
     let username_bytes = username.as_bytes();
     if username_bytes.len() > 255 {
-        return Err(ChatError::Crypto("Username too long (max 255 bytes)".into()));
+        return Err(ChatError::Crypto(
+            "Username too long (max 255 bytes)".into(),
+        ));
     }
 
     // Build plaintext: username_len || username || message
@@ -87,7 +95,8 @@ pub fn encrypt(key: &[u8; KEY_LEN], username: &str, message: &[u8]) -> Result<Ve
     rand::rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
-    let ciphertext = cipher.encrypt(nonce, plaintext.as_slice())
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext.as_slice())
         .map_err(|e| ChatError::Crypto(format!("Encryption failed: {e}")))?;
 
     // Output: nonce || ciphertext (which includes GCM tag)
@@ -110,8 +119,9 @@ pub fn decrypt(key: &[u8; KEY_LEN], data: &[u8]) -> Result<(String, Vec<u8>)> {
     let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|e| ChatError::Crypto(format!("Failed to create cipher: {e}")))?;
 
-    let plaintext = cipher.decrypt(nonce, ciphertext)
-        .map_err(|_| ChatError::Crypto("Decryption failed (wrong key or tampered message)".into()))?;
+    let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| {
+        ChatError::Crypto("Decryption failed (wrong key or tampered message)".into())
+    })?;
 
     if plaintext.is_empty() {
         return Err(ChatError::Crypto("Empty plaintext".into()));
@@ -119,7 +129,9 @@ pub fn decrypt(key: &[u8; KEY_LEN], data: &[u8]) -> Result<(String, Vec<u8>)> {
 
     let username_len = plaintext[0] as usize;
     if plaintext.len() < 1 + username_len {
-        return Err(ChatError::Crypto("Malformed plaintext: username truncated".into()));
+        return Err(ChatError::Crypto(
+            "Malformed plaintext: username truncated".into(),
+        ));
     }
 
     let username = String::from_utf8(plaintext[1..1 + username_len].to_vec())
@@ -133,8 +145,13 @@ pub fn decrypt(key: &[u8; KEY_LEN], data: &[u8]) -> Result<(String, Vec<u8>)> {
 /// Returns base64-encoded blob.
 pub fn wrap_key_with_password(session_key: &SessionKey, password: &str) -> Result<String> {
     let mut derived = [0u8; KEY_LEN];
-    pbkdf2::pbkdf2::<Hmac<Sha256>>(password.as_bytes(), PBKDF2_SALT, PBKDF2_ITERATIONS, &mut derived)
-        .map_err(|e| ChatError::Crypto(format!("PBKDF2 failed: {e}")))?;
+    pbkdf2::pbkdf2::<Hmac<Sha256>>(
+        password.as_bytes(),
+        PBKDF2_SALT,
+        PBKDF2_ITERATIONS,
+        &mut derived,
+    )
+    .map_err(|e| ChatError::Crypto(format!("PBKDF2 failed: {e}")))?;
 
     let cipher = Aes256Gcm::new_from_slice(&derived)
         .map_err(|e| ChatError::Crypto(format!("Failed to create cipher: {e}")))?;
@@ -144,14 +161,18 @@ pub fn wrap_key_with_password(session_key: &SessionKey, password: &str) -> Resul
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let plaintext = session_key.to_bytes();
-    let ciphertext = cipher.encrypt(nonce, plaintext.as_slice())
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext.as_slice())
         .map_err(|e| ChatError::Crypto(format!("Key wrapping failed: {e}")))?;
 
     let mut output = Vec::with_capacity(NONCE_LEN + ciphertext.len());
     output.extend_from_slice(&nonce_bytes);
     output.extend_from_slice(&ciphertext);
 
-    Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &output))
+    Ok(base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        &output,
+    ))
 }
 
 /// Decrypt a session key from a password-protected base64 blob.
@@ -164,8 +185,13 @@ pub fn unwrap_key_with_password(encoded: &str, password: &str) -> Result<Session
     }
 
     let mut derived = [0u8; KEY_LEN];
-    pbkdf2::pbkdf2::<Hmac<Sha256>>(password.as_bytes(), PBKDF2_SALT, PBKDF2_ITERATIONS, &mut derived)
-        .map_err(|e| ChatError::Crypto(format!("PBKDF2 failed: {e}")))?;
+    pbkdf2::pbkdf2::<Hmac<Sha256>>(
+        password.as_bytes(),
+        PBKDF2_SALT,
+        PBKDF2_ITERATIONS,
+        &mut derived,
+    )
+    .map_err(|e| ChatError::Crypto(format!("PBKDF2 failed: {e}")))?;
 
     let (nonce_bytes, ciphertext) = data.split_at(NONCE_LEN);
     let nonce = Nonce::from_slice(nonce_bytes);
@@ -173,10 +199,21 @@ pub fn unwrap_key_with_password(encoded: &str, password: &str) -> Result<Session
     let cipher = Aes256Gcm::new_from_slice(&derived)
         .map_err(|e| ChatError::Crypto(format!("Failed to create cipher: {e}")))?;
 
-    let plaintext = cipher.decrypt(nonce, ciphertext)
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
         .map_err(|_| ChatError::InvalidPassword)?;
 
     SessionKey::from_bytes(&plaintext)
+}
+
+/// Derive a short authentication string from key material for out-of-band verification.
+/// Returns a 6-character uppercase hex string (24 bits of entropy).
+pub fn short_auth_string(key: &[u8; KEY_LEN]) -> String {
+    use hmac::Mac;
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC accepts any key size");
+    mac.update(b"unix-chat-sas-verification");
+    let result = mac.finalize().into_bytes();
+    format!("{:02X}{:02X}{:02X}", result[0], result[1], result[2])
 }
 
 #[cfg(test)]
@@ -248,5 +285,26 @@ mod tests {
 
         let wrapped = wrap_key_with_password(&session_key, "correct").unwrap();
         assert!(unwrap_key_with_password(&wrapped, "wrong").is_err());
+    }
+
+    #[test]
+    fn short_auth_string_deterministic_and_well_formed() {
+        let key = test_key();
+        let sas1 = short_auth_string(&key);
+        let sas2 = short_auth_string(&key);
+        assert_eq!(sas1, sas2, "SAS must be deterministic for the same key");
+        assert_eq!(sas1.len(), 6, "SAS must be 6 hex characters");
+        assert!(
+            sas1.chars().all(|c| c.is_ascii_hexdigit()),
+            "SAS must be valid hex"
+        );
+    }
+
+    #[test]
+    fn short_auth_string_different_keys_differ() {
+        let sas1 = short_auth_string(&test_key());
+        let sas2 = short_auth_string(&test_key());
+        // Random keys should produce different SAS (collision probability ~1/16M)
+        assert_ne!(sas1, sas2);
     }
 }

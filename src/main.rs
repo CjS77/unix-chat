@@ -1,13 +1,13 @@
+use clap::{Parser, Subcommand};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use clap::{Parser, Subcommand};
 
 use unix_chat::error::ChatError;
-use unix_chat::{client, init, key_exchange, list, permissions, server, signal};
 use unix_chat::topic::Topic;
+use unix_chat::{client, init, key_exchange, list, permissions, server, signal};
 
 #[derive(Parser)]
-#[command(name = "unix-chat", about = "Peer-to-peer encrypted chat for local users")]
+#[command(name = "uc", about = "Peer-to-peer encrypted chat for local users")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -58,13 +58,20 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Command::Start { password, topic, world } => {
+        Command::Start {
+            password,
+            topic,
+            world,
+        } => {
             let topic = topic.unwrap_or_else(Topic::from_username);
             server::run(password.as_deref(), &topic, world, &shutdown)
         }
         Command::Connect { ref name } => client::run(name),
         Command::List => list::run(),
-        Command::ShareKey { ref username, world } => key_exchange::share_key(username, world, &shutdown),
+        Command::ShareKey {
+            ref username,
+            world,
+        } => key_exchange::share_key(username, world, &shutdown),
         Command::ReceiveKey { pid } => key_exchange::receive_key(pid),
         Command::Init => init::run(),
     };

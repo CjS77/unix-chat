@@ -8,7 +8,10 @@ pub fn run() -> Result<()> {
     println!("Checking environment...");
 
     // Check for ssh-keygen
-    let has_ssh_keygen = Command::new("which").arg("ssh-keygen").output().is_ok_and(|o| o.status.success());
+    let has_ssh_keygen = Command::new("which")
+        .arg("ssh-keygen")
+        .output()
+        .is_ok_and(|o| o.status.success());
     if has_ssh_keygen {
         println!("  [ok] ssh-keygen");
     } else {
@@ -16,7 +19,7 @@ pub fn run() -> Result<()> {
     }
 
     // Check for / generate SSH key
-    let key_path = ssh_key_path();
+    let key_path = ssh_key_path()?;
     if key_path.exists() {
         println!("  [ok] SSH key at {}", key_path.display());
     } else {
@@ -27,7 +30,9 @@ pub fn run() -> Result<()> {
         }
         eprint!("Generate a new SSH key? [y/N] ");
         let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer).io_context("reading user input from stdin")?;
+        std::io::stdin()
+            .read_line(&mut answer)
+            .io_context("reading user input from stdin")?;
         if answer.trim().eq_ignore_ascii_case("y") {
             if let Some(parent) = key_path.parent() {
                 std::fs::create_dir_all(parent)
@@ -47,7 +52,10 @@ pub fn run() -> Result<()> {
                 eprintln!("ssh-keygen failed with exit code {status}");
             }
         } else {
-            println!("Skipping key generation. You will need a key at {} before using chat.", key_path.display());
+            println!(
+                "Skipping key generation. You will need a key at {} before using chat.",
+                key_path.display()
+            );
         }
     }
 
@@ -91,12 +99,27 @@ fn user_in_group(username: &str, group: &str) -> bool {
         let mut ngroups: libc::c_int = 64;
         let mut groups = vec![0 as libc::gid_t; ngroups as usize];
         // SAFETY: getgrouplist is safe with valid pointers and correct size
-        let c_username = std::ffi::CString::new(username).unwrap_or_default();
+        let c_username = std::ffi::CString::new(username)
+            .unwrap_or_else(|_| std::ffi::CString::new("unknown").expect("static string"));
         let primary_gid = unsafe { libc::getegid() };
-        let ret = unsafe { libc::getgrouplist(c_username.as_ptr(), primary_gid, groups.as_mut_ptr(), &mut ngroups) };
+        let ret = unsafe {
+            libc::getgrouplist(
+                c_username.as_ptr(),
+                primary_gid,
+                groups.as_mut_ptr(),
+                &mut ngroups,
+            )
+        };
         if ret == -1 {
             groups.resize(ngroups as usize, 0);
-            unsafe { libc::getgrouplist(c_username.as_ptr(), primary_gid, groups.as_mut_ptr(), &mut ngroups) };
+            unsafe {
+                libc::getgrouplist(
+                    c_username.as_ptr(),
+                    primary_gid,
+                    groups.as_mut_ptr(),
+                    &mut ngroups,
+                )
+            };
         }
         groups.truncate(ngroups as usize);
         return groups.contains(&gid);

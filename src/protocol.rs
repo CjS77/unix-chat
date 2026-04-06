@@ -26,7 +26,9 @@ pub fn read_message(stream: &mut impl Read) -> Result<Option<Vec<u8>>> {
 
     let len = u32::from_be_bytes(len_buf);
     if len > MAX_MESSAGE_SIZE {
-        return Err(ChatError::Crypto(format!("Message too large: {len} bytes (max {MAX_MESSAGE_SIZE})")));
+        return Err(ChatError::Crypto(format!(
+            "Message too large: {len} bytes (max {MAX_MESSAGE_SIZE})"
+        )));
     }
 
     let mut buf = vec![0u8; len as usize];
