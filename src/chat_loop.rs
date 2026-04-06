@@ -18,9 +18,7 @@ const COLOR_SYSTEM: &str = "\x1b[33m"; // Yellow for system messages
 
 /// Run the bidirectional chat loop over an established Unix stream.
 /// Blocks until the connection is closed or an error occurs.
-pub fn run(stream: UnixStream, key: &[u8; 32], username: &str) {
-    let shutdown = Arc::new(AtomicBool::new(false));
-
+pub fn run(stream: UnixStream, key: &[u8; 32], username: &str, shutdown: Arc<AtomicBool>) {
     let write_stream = match stream.try_clone() {
         Ok(s) => s,
         Err(e) => {
@@ -68,6 +66,10 @@ fn stdin_writer(mut stream: UnixStream, key: &[u8; 32], username: &str, shutdown
             Action::Quit => break,
         }
     }
+
+    // Shut down the stream so socket_reader unblocks and exits too.
+    shutdown.store(true, Ordering::Relaxed);
+    let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 
 fn print_message(stream: &mut UnixStream, key: &[u8; 32], username: &str, line: &str) {

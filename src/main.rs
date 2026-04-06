@@ -64,9 +64,9 @@ fn main() {
             world,
         } => {
             let topic = topic.unwrap_or_else(Topic::from_username);
-            server::run(password.as_deref(), &topic, world, &shutdown)
+            server::run(password.as_deref(), &topic, world, Arc::clone(&shutdown))
         }
-        Command::Connect { ref name } => client::run(name),
+        Command::Connect { ref name } => client::run(name, Arc::clone(&shutdown)),
         Command::List => list::run(),
         Command::ShareKey {
             ref username,

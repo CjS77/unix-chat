@@ -1,5 +1,7 @@
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use crate::chat_loop;
 use crate::config::SOCKET_DIR;
@@ -7,7 +9,7 @@ use crate::crypto::{self, SessionKey};
 use crate::error::{ChatError, IoResultExt, Result};
 use crate::topic::Topic;
 
-pub fn run(topic: &Topic) -> Result<()> {
+pub fn run(topic: &Topic, shutdown: Arc<AtomicBool>) -> Result<()> {
     let own_username = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
     let socket_path = PathBuf::from(format!("{SOCKET_DIR}/{topic}.sock"));
     let key_enc_path = PathBuf::from(format!("{SOCKET_DIR}/{topic}.key.enc"));
@@ -45,7 +47,7 @@ pub fn run(topic: &Topic) -> Result<()> {
 
     println!("Connected to {topic}!\n");
 
-    chat_loop::run(stream, &session_key.key, &own_username);
+    chat_loop::run(stream, &session_key.key, &own_username, shutdown);
     println!("\nDisconnected.");
     Ok(())
 }

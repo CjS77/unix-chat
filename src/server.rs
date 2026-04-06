@@ -52,7 +52,7 @@ pub fn run(
     password: Option<&str>,
     topic: &Topic,
     world: bool,
-    shutdown: &AtomicBool,
+    shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
     let username = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
     let session_key = crypto::generate_session_key(&ssh_key_path()?)?;
@@ -102,9 +102,7 @@ pub fn run(
     println!("Waiting for connections...\n");
 
     // Relay broadcasts every incoming message to all other connected streams.
-    let shutdown_arc = Arc::new(AtomicBool::new(false));
-    // Mirror the caller's shutdown flag into our Arc so the relay can see it.
-    let relay = Relay::new(Arc::clone(&shutdown_arc));
+    let relay = Relay::new(Arc::clone(&shutdown));
 
     // Internal stream pair: one end goes to the relay, the other is used by
     // the server operator's chat_loop -- identical to a client.
@@ -114,7 +112,7 @@ pub fn run(
 
     // Accept loop in a background thread.
     let relay_accept = Arc::clone(&relay);
-    let shutdown_accept = Arc::clone(&shutdown_arc);
+    let shutdown_accept = Arc::clone(&shutdown);
     std::thread::spawn(move || {
         let mut last_connect = std::time::Instant::now();
         let mut rapid_count: u32 = 0;
@@ -152,11 +150,14 @@ pub fn run(
     });
 
     // Server operator enters the same chat loop as any client.
-    chat_loop::run(operator_stream, &session_key.key, &username);
+    chat_loop::run(
+        operator_stream,
+        &session_key.key,
+        &username,
+        Arc::clone(&shutdown),
+    );
 
     // Operator quit -- tear everything down.
-    shutdown_arc.store(true, std::sync::atomic::Ordering::Relaxed);
-    // Also mirror to the caller's flag so outer code sees the shutdown.
     shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
     relay.shutdown_all();
 
