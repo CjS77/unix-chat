@@ -2,6 +2,8 @@
 name = "unix-chat"
 version = "0.10.0"
 edition = "2024"
+license = "MIT"
+description = "A peer-to-peer encrypted chat system for local users on the same machine, using Unix sockets and e2e encryption"
 
 [[bin]]
 name = "uc"
