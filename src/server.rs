@@ -3,12 +3,14 @@ use crate::config::{SOCKET_DIR, ssh_key_path};
 use crate::crypto;
 use crate::error::{ChatError, IoResultExt, Result};
 use crate::permissions;
+use crate::relay::Relay;
 use crate::signal;
 use crate::topic::Topic;
 use std::io::Write;
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
-use std::os::unix::net::UnixListener;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 /// Guard that removes socket and key files on drop.
@@ -99,48 +101,64 @@ pub fn run(
     println!("Chat server started on {}", socket_path.display());
     println!("Waiting for connections...\n");
 
-    // Accept loop -- survives client disconnects.
-    // The listener is non-blocking so we poll with a short sleep to
-    // check the shutdown flag, since signal-hook uses SA_RESTART.
-    let mut last_connect = std::time::Instant::now();
-    let mut rapid_count: u32 = 0;
-    loop {
-        if signal::shutdown_requested(shutdown) {
-            println!("Shutting down...");
-            break;
-        }
-        match listener.accept() {
-            Ok((stream, _addr)) => {
-                let now = std::time::Instant::now();
-                if now.duration_since(last_connect) < std::time::Duration::from_secs(1) {
-                    rapid_count += 1;
-                    if rapid_count >= 5 {
-                        eprintln!(
-                            "Warning: rapid reconnection detected ({rapid_count} in <1s). Possible abuse."
-                        );
-                        std::thread::sleep(std::time::Duration::from_secs(1));
-                    }
-                } else {
-                    rapid_count = 0;
-                }
-                last_connect = now;
+    // Relay broadcasts every incoming message to all other connected streams.
+    let shutdown_arc = Arc::new(AtomicBool::new(false));
+    // Mirror the caller's shutdown flag into our Arc so the relay can see it.
+    let relay = Relay::new(Arc::clone(&shutdown_arc));
 
-                stream.set_nonblocking(false)?;
-                println!("Client connected!");
-                chat_loop::run(stream, &session_key.key, &username);
-                if signal::shutdown_requested(shutdown) {
-                    break;
+    // Internal stream pair: one end goes to the relay, the other is used by
+    // the server operator's chat_loop -- identical to a client.
+    let (operator_stream, relay_end) =
+        UnixStream::pair().io_context("creating internal stream pair")?;
+    relay.add_client(relay_end);
+
+    // Accept loop in a background thread.
+    let relay_accept = Arc::clone(&relay);
+    let shutdown_accept = Arc::clone(&shutdown_arc);
+    std::thread::spawn(move || {
+        let mut last_connect = std::time::Instant::now();
+        let mut rapid_count: u32 = 0;
+        loop {
+            if signal::shutdown_requested(&shutdown_accept) {
+                break;
+            }
+            match listener.accept() {
+                Ok((stream, _addr)) => {
+                    let now = std::time::Instant::now();
+                    if now.duration_since(last_connect) < std::time::Duration::from_secs(1) {
+                        rapid_count += 1;
+                        if rapid_count >= 5 {
+                            eprintln!(
+                                "Warning: rapid reconnection detected ({rapid_count} in <1s). Possible abuse."
+                            );
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                        }
+                    } else {
+                        rapid_count = 0;
+                    }
+                    last_connect = now;
+
+                    let _ = stream.set_nonblocking(false);
+                    relay_accept.add_client(stream);
                 }
-                println!("\n(client disconnected, waiting for new connection...)");
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-            }
-            Err(e) => {
-                eprintln!("Accept error: {e}");
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(e) => {
+                    eprintln!("Accept error: {e}");
+                }
             }
         }
-    }
+    });
+
+    // Server operator enters the same chat loop as any client.
+    chat_loop::run(operator_stream, &session_key.key, &username);
+
+    // Operator quit -- tear everything down.
+    shutdown_arc.store(true, std::sync::atomic::Ordering::Relaxed);
+    // Also mirror to the caller's flag so outer code sees the shutdown.
+    shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+    relay.shutdown_all();
 
     // _guard drops here, cleaning up socket and key files
     drop(_guard);

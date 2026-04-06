@@ -8,6 +8,7 @@ pub mod key_exchange;
 pub mod list;
 pub mod permissions;
 pub mod protocol;
+pub mod relay;
 pub mod server;
 pub mod signal;
 pub mod slash_commands;
