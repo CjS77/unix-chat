@@ -1,6 +1,8 @@
 const COLOR_SYSTEM: &str = "\x1b[33m";
 const COLOR_RESET: &str = "\x1b[0m";
 
+pub const SLASH_COMMANDS: &[&str] = &["/help", "/quit", "/share ", "/whoami"];
+
 /// Result of executing a slash command.
 pub enum Action {
     /// Continue the chat loop.

@@ -1,5 +1,6 @@
 pub mod chat_loop;
 pub mod client;
+pub mod completer;
 pub mod config;
 pub mod crypto;
 pub mod error;

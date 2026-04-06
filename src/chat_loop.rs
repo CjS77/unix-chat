@@ -1,11 +1,16 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
+use rustyline::Editor;
+use rustyline::error::ReadlineError;
+use rustyline::history::DefaultHistory;
+
+use crate::completer::ChatCompleter;
 use crate::crypto;
 use crate::protocol;
 use crate::protocol::MessageType;
@@ -36,30 +41,45 @@ pub fn run(
         }
     };
 
-    // Stdin reader thread: reads lines, encrypts, sends
-    let shutdown_tx = Arc::clone(&shutdown);
+    let mut rl: Editor<ChatCompleter, DefaultHistory> = match Editor::new() {
+        Ok(editor) => editor,
+        Err(e) => {
+            eprintln!("{COLOR_SYSTEM}Failed to initialise readline: {e}{COLOR_RESET}");
+            return;
+        }
+    };
+    rl.set_helper(Some(ChatCompleter::new()));
+
+    let printer = match rl.create_external_printer() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{COLOR_SYSTEM}Failed to create printer: {e}{COLOR_RESET}");
+            return;
+        }
+    };
+
+    // Socket reader thread: reads from socket, decrypts, prints via ExternalPrinter
+    let shutdown_rx = Arc::clone(&shutdown);
     let key_copy = *key;
     let username_owned = username.to_string();
     let topic_owned = topic.to_string();
-    let stdin_handle = thread::spawn(move || {
-        stdin_writer(
-            write_stream,
+    let reader_handle = thread::spawn(move || {
+        socket_reader(
+            &stream,
             &key_copy,
             &username_owned,
             &topic_owned,
-            &shutdown_tx,
+            &shutdown_rx,
+            printer,
         );
     });
 
-    // Main thread: reads from socket, decrypts, prints
-    socket_reader(&stream, key, username, topic, &shutdown);
+    // Main thread: readline input loop
+    stdin_writer(write_stream, key, username, topic, &shutdown, &mut rl);
 
-    // Signal stdin thread to stop and wait for it
+    // Signal reader thread to stop and wait for it
     shutdown.store(true, Ordering::Relaxed);
-    // Shutdown the read side won't help stdin, but shutting down the write side
-    // will cause the stdin thread's next write to fail.
-    let _ = stream.shutdown(std::net::Shutdown::Both);
-    let _ = stdin_handle.join();
+    let _ = reader_handle.join();
 }
 
 fn stdin_writer(
@@ -68,25 +88,36 @@ fn stdin_writer(
     username: &str,
     topic: &str,
     shutdown: &AtomicBool,
+    rl: &mut Editor<ChatCompleter, DefaultHistory>,
 ) {
-    let stdin = std::io::stdin();
-    let reader = BufReader::new(stdin.lock());
+    let prompt = format!("{username}> ");
 
-    for line in reader.lines() {
+    loop {
         if signal::shutdown_requested(shutdown) {
             break;
         }
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
 
-        // Check for slash commands before sending
-        match slash_commands::try_execute(&line, username) {
-            Action::Continue => print_message(&mut stream, key, username, &line),
-            Action::Handled => continue,
-            Action::Quit => break,
-            Action::ShareFile(filename) => send_file(&mut stream, key, username, topic, &filename),
+        match rl.readline(&prompt) {
+            Ok(line) => {
+                if line.is_empty() {
+                    continue;
+                }
+                rl.add_history_entry(&line).ok();
+
+                match slash_commands::try_execute(&line, username) {
+                    Action::Continue => print_message(&mut stream, key, username, &line),
+                    Action::Handled => continue,
+                    Action::Quit => break,
+                    Action::ShareFile(filename) => {
+                        send_file(&mut stream, key, username, topic, &filename);
+                    }
+                }
+            }
+            Err(ReadlineError::Interrupted | ReadlineError::Eof) => break,
+            Err(e) => {
+                eprintln!("{COLOR_SYSTEM}Input error: {e}{COLOR_RESET}");
+                break;
+            }
         }
     }
 
@@ -96,7 +127,8 @@ fn stdin_writer(
 }
 
 fn print_message(stream: &mut UnixStream, key: &[u8; 32], username: &str, line: &str) {
-    // Print own message locally
+    // Print own message locally (move cursor up to overwrite the prompt line)
+    print!("\x1b[A\x1b[2K");
     println!("{COLOR_SELF}{username}> {line}{COLOR_RESET}");
 
     let encrypted = match crypto::encrypt(key, username, line.as_bytes()) {
@@ -179,8 +211,9 @@ fn socket_reader(
     own_username: &str,
     topic: &str,
     shutdown: &AtomicBool,
+    mut printer: impl rustyline::ExternalPrinter,
 ) {
-    let mut reader = BufReader::new(stream);
+    let mut reader = std::io::BufReader::new(stream);
 
     loop {
         if signal::shutdown_requested(shutdown) {
@@ -198,24 +231,26 @@ fn socket_reader(
                     } else {
                         COLOR_PEER
                     };
-                    println!("{color}{safe_sender}> {safe_msg}{COLOR_RESET}");
+                    let _ = printer.print(format!("{color}{safe_sender}> {safe_msg}{COLOR_RESET}"));
                 }
                 Err(e) => {
-                    eprintln!("{COLOR_SYSTEM}Decryption error: {e}{COLOR_RESET}");
+                    let _ =
+                        printer.print(format!("{COLOR_SYSTEM}Decryption error: {e}{COLOR_RESET}"));
                 }
             },
             Ok(Some((MessageType::File, data))) => match crypto::decrypt(key, &data) {
                 Ok((sender, file_payload)) => {
-                    handle_received_file(&sender, &file_payload, topic);
+                    handle_received_file(&sender, &file_payload, topic, &mut printer);
                 }
                 Err(e) => {
-                    eprintln!("{COLOR_SYSTEM}Decryption error: {e}{COLOR_RESET}");
+                    let _ =
+                        printer.print(format!("{COLOR_SYSTEM}Decryption error: {e}{COLOR_RESET}"));
                 }
             },
             Ok(Some((MessageType::Unknown(t), _))) => {
-                eprintln!(
+                let _ = printer.print(format!(
                     "{COLOR_SYSTEM}Received unknown message type 0x{t:04X}, ignoring{COLOR_RESET}"
-                );
+                ));
             }
             Ok(None) => break, // Clean disconnect
             Err(e) => {
@@ -223,7 +258,7 @@ fn socket_reader(
                     if e.to_string().contains("Interrupted") {
                         continue;
                     }
-                    eprintln!("{COLOR_SYSTEM}Read error: {e}{COLOR_RESET}");
+                    let _ = printer.print(format!("{COLOR_SYSTEM}Read error: {e}{COLOR_RESET}"));
                 }
                 break;
             }
@@ -257,24 +292,33 @@ fn create_unique_file(dir: &Path, name: &str) -> Option<(File, std::path::PathBu
     None
 }
 
-fn handle_received_file(sender: &str, payload: &[u8], topic: &str) {
+fn handle_received_file(
+    sender: &str,
+    payload: &[u8],
+    topic: &str,
+    printer: &mut impl rustyline::ExternalPrinter,
+) {
     if payload.len() < 2 {
-        eprintln!("{COLOR_SYSTEM}Malformed file message: too short{COLOR_RESET}");
+        let _ = printer.print(format!(
+            "{COLOR_SYSTEM}Malformed file message: too short{COLOR_RESET}"
+        ));
         return;
     }
 
     let filename_len = u16::from_be_bytes([payload[0], payload[1]]) as usize;
     if payload.len() < 2 + filename_len {
-        eprintln!("{COLOR_SYSTEM}Malformed file message: filename truncated{COLOR_RESET}");
+        let _ = printer.print(format!(
+            "{COLOR_SYSTEM}Malformed file message: filename truncated{COLOR_RESET}"
+        ));
         return;
     }
 
     let filename = match std::str::from_utf8(&payload[2..2 + filename_len]) {
         Ok(s) => s,
         Err(_) => {
-            eprintln!(
+            let _ = printer.print(format!(
                 "{COLOR_SYSTEM}Malformed file message: invalid filename encoding{COLOR_RESET}"
-            );
+            ));
             return;
         }
     };
@@ -283,7 +327,9 @@ fn handle_received_file(sender: &str, payload: &[u8], topic: &str) {
     let safe_name = match Path::new(filename).file_name().and_then(|n| n.to_str()) {
         Some(n) if !n.is_empty() && n != ".." && n != "." => n,
         _ => {
-            eprintln!("{COLOR_SYSTEM}Received file with invalid name, ignoring{COLOR_RESET}");
+            let _ = printer.print(format!(
+                "{COLOR_SYSTEM}Received file with invalid name, ignoring{COLOR_RESET}"
+            ));
             return;
         }
     };
@@ -293,7 +339,9 @@ fn handle_received_file(sender: &str, payload: &[u8], topic: &str) {
     let home = match std::env::var("HOME") {
         Ok(h) => h,
         Err(_) => {
-            eprintln!("{COLOR_SYSTEM}HOME not set, cannot save file{COLOR_RESET}");
+            let _ = printer.print(format!(
+                "{COLOR_SYSTEM}HOME not set, cannot save file{COLOR_RESET}"
+            ));
             return;
         }
     };
@@ -303,36 +351,36 @@ fn handle_received_file(sender: &str, payload: &[u8], topic: &str) {
         .join("shared")
         .join(topic);
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!(
+        let _ = printer.print(format!(
             "{COLOR_SYSTEM}Cannot create directory '{}': {e}{COLOR_RESET}",
             dir.display()
-        );
+        ));
         return;
     }
 
     let (mut file, dest) = match create_unique_file(&dir, safe_name) {
         Some(pair) => pair,
         None => {
-            eprintln!(
+            let _ = printer.print(format!(
                 "{COLOR_SYSTEM}Cannot create file '{safe_name}' in '{}'{COLOR_RESET}",
                 dir.display()
-            );
+            ));
             return;
         }
     };
     if let Err(e) = file.write_all(content) {
-        eprintln!(
+        let _ = printer.print(format!(
             "{COLOR_SYSTEM}Cannot write file '{}': {e}{COLOR_RESET}",
             dest.display()
-        );
+        ));
         return;
     }
 
     let safe_sender = sanitize_for_terminal(sender);
-    println!(
+    let _ = printer.print(format!(
         "{COLOR_SYSTEM}[{safe_sender} shared {safe_name} -> {}]{COLOR_RESET}",
         dest.display()
-    );
+    ));
 }
 
 #[cfg(test)]

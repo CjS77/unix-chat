@@ -18,5 +18,6 @@ hmac = "0.12"
 pbkdf2 = { version = "0.12", features = ["simple"] }
 rand = "0.9"
 rpassword = "5"
+rustyline = "15"
 sha2 = "0.10"
 zeroize = { version = "1", features = ["derive"] }
