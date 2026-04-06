@@ -1,8 +1,9 @@
 [package]
 name = "unix-chat"
-version = "0.10.1"
+version = "0.10.2"
 edition = "2024"
 license = "MIT"
+keywords = ["chat", "unix", "e2ee", "local", "file-transfer"]
 description = "A peer-to-peer encrypted chat system for local users on the same machine, using Unix sockets and e2e encryption"
 
 [[bin]]
