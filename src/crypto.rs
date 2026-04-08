@@ -3,7 +3,7 @@ use std::path::Path;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
 use curve25519_dalek::MontgomeryPoint;
 use curve25519_dalek::edwards::CompressedEdwardsY;
-use curve25519_dalek::scalar::Scalar;
+use curve25519_dalek::scalar;
 use hkdf::Hkdf;
 use hmac::Hmac;
 use rand::RngCore;
@@ -83,7 +83,7 @@ pub fn generate_session_key(ssh_key_path: &std::path::Path) -> Result<SessionKey
 
 const ECDH_DOMAIN_TAG: &[u8] = b"unix_chat_ecdh_v1";
 
-pub fn openssh_key_to_scalar(private_key: &PrivateKey) -> Result<Scalar> {
+pub fn openssh_key_to_bytes(private_key: &PrivateKey) -> Result<[u8; 32]> {
     let ed25519_keypair = private_key
         .key_data()
         .ed25519()
@@ -95,11 +95,7 @@ pub fn openssh_key_to_scalar(private_key: &PrivateKey) -> Result<Scalar> {
     let hash = Sha512::digest(seed);
     let mut scalar_bytes = [0u8; 32];
     scalar_bytes.copy_from_slice(&hash[..32]);
-    scalar_bytes[0] &= 248;
-    scalar_bytes[31] &= 127;
-    scalar_bytes[31] |= 64;
-
-    Ok(Scalar::from_bytes_mod_order(scalar_bytes))
+    Ok(scalar::clamp_integer(scalar_bytes))
 }
 
 pub fn openssh_pubkey_to_point(pubkey: &PublicKey) -> Result<MontgomeryPoint> {
@@ -134,7 +130,7 @@ pub fn derive_ecdh_key(own_key_path: &Path, peer_pubkey_path: &Path) -> Result<[
         ))
     })?;
 
-    let scalar = openssh_key_to_scalar(&private_key)?;
+    let key = openssh_key_to_bytes(&private_key)?;
 
     // Parse peer's public key
     let pub_key = ssh_key::PublicKey::read_openssh_file(peer_pubkey_path).map_err(|e| {
@@ -147,7 +143,7 @@ pub fn derive_ecdh_key(own_key_path: &Path, peer_pubkey_path: &Path) -> Result<[
     let montgomery = openssh_pubkey_to_point(&pub_key)?;
 
     // ECDH: shared_point = montgomery_point * scalar
-    let shared_point = montgomery * scalar;
+    let shared_point = montgomery.mul_clamped(key);
 
     // Derive shared secret: SHA-256(DOMAIN_TAG || shared_point)
     let mut hasher = Sha256::new();

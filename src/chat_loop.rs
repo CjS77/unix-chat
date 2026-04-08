@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -439,30 +439,25 @@ fn handle_received_pubkey(
 ) {
     let safe_sender = sanitize_for_terminal(sender);
 
-    if let Err(msg) = validate_pubkey_file(pubkey_bytes, &safe_sender) {
-        let _ = printer.print(msg);
-        return;
-    }
-
-    let dir = match config::pubkey_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            let _ = printer.print(format!(
-                "{COLOR_SYSTEM}Cannot determine pubkey directory: {e}{COLOR_RESET}"
-            ));
+    let incoming_key = match validate_pubkey_file(pubkey_bytes, &safe_sender) {
+        Ok(key) => key,
+        Err(msg) => {
+            let _ = printer.print(msg);
             return;
         }
     };
 
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        let _ = printer.print(format!(
-            "{COLOR_SYSTEM}Cannot create directory '{}': {e}{COLOR_RESET}",
-            dir.display()
-        ));
+    let dest = match pubkey_dest_path(sender, &safe_sender, printer) {
+        Some(p) => p,
+        None => return,
+    };
+
+    // TOFU: never overwrite an existing key file. The user must delete it manually to accept a new key.
+    if dest.exists() {
+        print_tofu_rejection(&dest, &incoming_key, &safe_sender, printer);
         return;
     }
 
-    let dest = dir.join(format!("id_ed25519_unix_chat_{sender}.pub"));
     if let Err(e) = std::fs::write(&dest, pubkey_bytes) {
         let _ = printer.print(format!(
             "{COLOR_SYSTEM}Cannot write pubkey '{}': {e}{COLOR_RESET}",
@@ -471,8 +466,61 @@ fn handle_received_pubkey(
         return;
     }
 
+    let fp = incoming_key.fingerprint(ssh_key::HashAlg::Sha256);
     let _ = printer.print(format!(
-        "{COLOR_SYSTEM}[{safe_sender} shared their public key -> {}]{COLOR_RESET}",
+        "{COLOR_SYSTEM}[{safe_sender} shared their public key -> {} ({fp})]{COLOR_RESET}",
+        dest.display()
+    ));
+}
+
+fn pubkey_dest_path(
+    sender: &str,
+    safe_sender: &str,
+    printer: &mut impl rustyline::ExternalPrinter,
+) -> Option<PathBuf> {
+    let dir = match config::pubkey_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            let _ = printer.print(format!(
+                "{COLOR_SYSTEM}Cannot determine pubkey directory: {e}{COLOR_RESET}"
+            ));
+            return None;
+        }
+    };
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        let _ = printer.print(format!(
+            "{COLOR_SYSTEM}Cannot create directory '{}': {e}{COLOR_RESET}",
+            dir.display()
+        ));
+        return None;
+    }
+    match config::sanitize_peer_name(sender) {
+        Ok(safe) => Some(dir.join(format!("id_ed25519_unix_chat_{safe}.pub"))),
+        Err(e) => {
+            let _ = printer.print(format!(
+                "{COLOR_SYSTEM}[{safe_sender}] rejected pubkey broadcast: {e}{COLOR_RESET}"
+            ));
+            None
+        }
+    }
+}
+
+fn print_tofu_rejection(
+    dest: &Path,
+    incoming_key: &PublicKey,
+    safe_sender: &str,
+    printer: &mut impl rustyline::ExternalPrinter,
+) {
+    let incoming_fp = incoming_key.fingerprint(ssh_key::HashAlg::Sha256);
+    let existing_fp = ssh_key::PublicKey::read_openssh_file(dest)
+        .map(|k| k.fingerprint(ssh_key::HashAlg::Sha256).to_string())
+        .unwrap_or_else(|_| "<unreadable>".into());
+    let _ = printer.print(format!(
+        "{COLOR_SYSTEM}[{safe_sender}] already has a public key on file — refusing to overwrite.\n  \
+         Existing : {existing_fp}\n  \
+         Incoming : {incoming_fp}\n  \
+         File     : {}\n  \
+         If you trust the new key, verify it out of band, delete the file, and ask them to resend.{COLOR_RESET}",
         dest.display()
     ));
 }
