@@ -16,7 +16,6 @@ pub fn print_admin_instructions(username: &str, group_missing: bool) {
     eprintln!("  sudo usermod -aG {SOCKET_GROUP} {username}");
     eprintln!();
     eprintln!("Then log out and back in for the change to take effect.");
-    eprintln!("Alternatively, use --world for unrestricted access.");
 }
 
 /// Look up the GID for the `unixchat` group, returning `None` if it doesn't exist.
@@ -78,29 +77,21 @@ pub fn ensure_socket_dir() -> Result<()> {
     Ok(())
 }
 
-/// Set socket (or file) permissions based on the `world` flag.
+/// Set socket (or file) permissions to mode 0660 + group ownership set to `unixchat`.
 ///
-/// - `world = true`: mode 0666 (any local user can connect)
-/// - `world = false`: mode 0660 + group ownership set to `unixchat`
-///
-/// If the `unixchat` group doesn't exist and `world` is false, a warning is
-/// printed and mode 0660 is still applied (connections will only work for the owner).
-pub fn set_socket_permissions(path: &Path, world: bool) -> Result<()> {
-    if world {
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666))
-            .io_path_context(path, "setting permissions on")?;
+/// If the `unixchat` group doesn't exist, a warning is printed and mode 0660 is
+/// still applied (connections will only work for the owner).
+pub fn set_socket_permissions(path: &Path) -> Result<()> {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))
+        .io_path_context(path, "setting permissions on")?;
+    if let Some(gid) = get_group_gid(SOCKET_GROUP) {
+        set_group_owner(path, gid)?;
     } else {
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o660))
-            .io_path_context(path, "setting permissions on")?;
-        if let Some(gid) = get_group_gid(SOCKET_GROUP) {
-            set_group_owner(path, gid)?;
-        } else {
-            let username = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
-            eprintln!(
-                "Warning: '{SOCKET_GROUP}' group not found. Socket is restricted to your user only."
-            );
-            print_admin_instructions(&username, true);
-        }
+        let username = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
+        eprintln!(
+            "Warning: '{SOCKET_GROUP}' group not found. Socket is restricted to your user only."
+        );
+        print_admin_instructions(&username, true);
     }
     Ok(())
 }

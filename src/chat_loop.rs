@@ -6,17 +6,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
-use rustyline::Editor;
-use rustyline::error::ReadlineError;
-use rustyline::history::DefaultHistory;
-
 use crate::completer::ChatCompleter;
+use crate::config;
 use crate::crypto;
 use crate::protocol;
 use crate::protocol::MessageType;
 use crate::signal;
 use crate::slash_commands;
 use crate::slash_commands::Action;
+use rustyline::Editor;
+use rustyline::error::ReadlineError;
+use rustyline::history::DefaultHistory;
+use ssh_key::PublicKey;
 
 // ANSI color codes
 const COLOR_PEER: &str = "\x1b[36m"; // Cyan for peer messages
@@ -111,6 +112,9 @@ fn stdin_writer(
                     Action::ShareFile(filename) => {
                         send_file(&mut stream, key, username, topic, &filename);
                     }
+                    Action::BroadcastPubkey => {
+                        broadcast_pubkey(&mut stream, key, username);
+                    }
                 }
             }
             Err(ReadlineError::Interrupted | ReadlineError::Eof) => break,
@@ -196,6 +200,42 @@ fn send_file(
     println!("{COLOR_SYSTEM}[you shared {basename}]{COLOR_RESET}");
 }
 
+fn broadcast_pubkey(stream: &mut UnixStream, key: &[u8; 32], username: &str) {
+    let pub_key_path = match config::ssh_pub_key_path() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{COLOR_SYSTEM}Cannot locate public key: {e}{COLOR_RESET}");
+            return;
+        }
+    };
+
+    let pubkey_bytes = match std::fs::read(&pub_key_path) {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!(
+                "{COLOR_SYSTEM}Cannot read public key '{}': {e}{COLOR_RESET}",
+                pub_key_path.display()
+            );
+            return;
+        }
+    };
+
+    let encrypted = match crypto::encrypt(key, username, &pubkey_bytes) {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("{COLOR_SYSTEM}Encryption error: {e}{COLOR_RESET}");
+            return;
+        }
+    };
+
+    if let Err(e) = protocol::write_message(stream, MessageType::PubkeyBroadcast, &encrypted) {
+        eprintln!("{COLOR_SYSTEM}Send error: {e}{COLOR_RESET}");
+        return;
+    }
+
+    println!("{COLOR_SYSTEM}[public key broadcast sent]{COLOR_RESET}");
+}
+
 /// Strip control characters that could manipulate the terminal.
 /// Preserves printable ASCII, newlines, and valid multi-byte UTF-8.
 fn sanitize_for_terminal(input: &str) -> String {
@@ -241,6 +281,15 @@ fn socket_reader(
             Ok(Some((MessageType::File, data))) => match crypto::decrypt(key, &data) {
                 Ok((sender, file_payload)) => {
                     handle_received_file(&sender, &file_payload, topic, &mut printer);
+                }
+                Err(e) => {
+                    let _ =
+                        printer.print(format!("{COLOR_SYSTEM}Decryption error: {e}{COLOR_RESET}"));
+                }
+            },
+            Ok(Some((MessageType::PubkeyBroadcast, data))) => match crypto::decrypt(key, &data) {
+                Ok((sender, pubkey_bytes)) => {
+                    handle_received_pubkey(&sender, &pubkey_bytes, &mut printer);
                 }
                 Err(e) => {
                     let _ =
@@ -381,6 +430,71 @@ fn handle_received_file(
         "{COLOR_SYSTEM}[{safe_sender} shared {safe_name} -> {}]{COLOR_RESET}",
         dest.display()
     ));
+}
+
+fn handle_received_pubkey(
+    sender: &str,
+    pubkey_bytes: &[u8],
+    printer: &mut impl rustyline::ExternalPrinter,
+) {
+    let safe_sender = sanitize_for_terminal(sender);
+
+    if let Err(msg) = validate_pubkey_file(pubkey_bytes, &safe_sender) {
+        let _ = printer.print(msg);
+        return;
+    }
+
+    let dir = match config::pubkey_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            let _ = printer.print(format!(
+                "{COLOR_SYSTEM}Cannot determine pubkey directory: {e}{COLOR_RESET}"
+            ));
+            return;
+        }
+    };
+
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        let _ = printer.print(format!(
+            "{COLOR_SYSTEM}Cannot create directory '{}': {e}{COLOR_RESET}",
+            dir.display()
+        ));
+        return;
+    }
+
+    let dest = dir.join(format!("id_ed25519_unix_chat_{sender}.pub"));
+    if let Err(e) = std::fs::write(&dest, pubkey_bytes) {
+        let _ = printer.print(format!(
+            "{COLOR_SYSTEM}Cannot write pubkey '{}': {e}{COLOR_RESET}",
+            dest.display()
+        ));
+        return;
+    }
+
+    let _ = printer.print(format!(
+        "{COLOR_SYSTEM}[{safe_sender} shared their public key -> {}]{COLOR_RESET}",
+        dest.display()
+    ));
+}
+
+fn validate_pubkey_file(pubkey_bytes: &[u8], user: &String) -> Result<PublicKey, String> {
+    // Validate that the payload is a well-formed OpenSSH Ed25519 public key
+    let pubkey_str = std::str::from_utf8(pubkey_bytes).map_err(|e| {
+        format!(
+            "{COLOR_SYSTEM}[{user}] rejected pubkey broadcast: not valid UTF-8. {e}{COLOR_RESET}"
+        )
+    })?;
+    let pub_key = ssh_key::PublicKey::from_openssh(pubkey_str).map_err(|e| {
+        format!("{COLOR_SYSTEM}[{user}] rejected pubkey broadcast: invalid OpenSSH public key: {e}{COLOR_RESET}")
+    })?;
+    if pub_key.algorithm().is_ed25519() {
+        Ok(pub_key)
+    } else {
+        Err(format!(
+            "{COLOR_SYSTEM}[{user}] rejected pubkey broadcast: expected Ed25519, got {}{COLOR_RESET}",
+            pub_key.algorithm()
+        ))
+    }
 }
 
 #[cfg(test)]

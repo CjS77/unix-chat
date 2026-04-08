@@ -15,6 +15,7 @@ pub enum ChatError {
     ConnectionRefused(String),
     InvalidPassword,
     SshKeyMissing(String),
+    Config(String),
 }
 
 impl fmt::Display for ChatError {
@@ -44,6 +45,7 @@ impl fmt::Display for ChatError {
                     "SSH key not found at {path}. Run 'uc init' to generate one."
                 )
             }
+            ChatError::Config(msg) => write!(f, "Invalid configuration: {msg}"),
         }
     }
 }

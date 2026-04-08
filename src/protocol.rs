@@ -9,6 +9,7 @@ const MAX_MESSAGE_SIZE: u32 = 1024 * 1024; // 1 MiB
 pub enum MessageType {
     Text,
     File,
+    PubkeyBroadcast,
     Unknown(u16),
 }
 
@@ -17,6 +18,7 @@ impl MessageType {
         match self {
             MessageType::Text => 0x0001,
             MessageType::File => 0x0002,
+            MessageType::PubkeyBroadcast => 0x0003,
             MessageType::Unknown(v) => v,
         }
     }
@@ -27,6 +29,7 @@ impl From<u16> for MessageType {
         match v {
             0x0001 => MessageType::Text,
             0x0002 => MessageType::File,
+            0x0003 => MessageType::PubkeyBroadcast,
             _ => MessageType::Unknown(v),
         }
     }
