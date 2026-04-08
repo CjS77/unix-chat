@@ -163,12 +163,19 @@ pub fn derive_ecdh_key(own_key_path: &Path, peer_pubkey_path: &Path) -> Result<[
         .ed25519()
         .ok_or_else(|| ChatError::Crypto("Peer key is not Ed25519".into()))?;
 
-    // Derive shared secret: SHA-256(DOMAIN_TAG || our_pubkey || peer_pubkey || shared_point)
+    // Sort public keys so both sides produce the same hash regardless of who is "own" vs "peer".
+    let (first, second) = if own_pub_ed.as_ref() < peer_pub_ed.as_ref() {
+        (own_pub_ed.as_ref(), peer_pub_ed.as_ref())
+    } else {
+        (peer_pub_ed.as_ref(), own_pub_ed.as_ref())
+    };
+
+    // Derive shared secret: SHA-256(DOMAIN_TAG || pubkey_low || pubkey_high || shared_point)
     // Including both public keys binds the derived key to the specific participants.
     let mut hasher = Sha256::new();
     hasher.update(ECDH_DOMAIN_TAG);
-    hasher.update(own_pub_ed.as_ref());
-    hasher.update(peer_pub_ed.as_ref());
+    hasher.update(first);
+    hasher.update(second);
     hasher.update(shared_point.0);
     let result = hasher.finalize();
 
