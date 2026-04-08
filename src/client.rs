@@ -70,6 +70,7 @@ fn run_password_protected(
 
 fn run_p2p(own_username: String, peer_name: &str, shutdown: Arc<AtomicBool>) -> Result<()> {
     // ECDH mode: derive shared key from own private key + peer's public key
+    let safe_username = config::sanitize_peer_name(&own_username)?;
     let peer_pub_path = config::peer_pubkey_path(peer_name)?;
     if !peer_pub_path.exists() {
         return Err(ChatError::KeyNotFound(format!(
@@ -80,8 +81,10 @@ fn run_p2p(own_username: String, peer_name: &str, shutdown: Arc<AtomicBool>) -> 
         )));
     }
     let key = crypto::derive_ecdh_key(&ssh_key_path()?, &peer_pub_path)?;
-    // Server is the peer, client is us
-    let socket_path = PathBuf::from(format!("{SOCKET_DIR}/e2ee-{peer_name}-{own_username}.sock"));
+    // Server is the peer, client is us. peer_name is already sanitized by peer_pubkey_path above.
+    let socket_path = PathBuf::from(format!(
+        "{SOCKET_DIR}/e2ee-{peer_name}-{safe_username}.sock"
+    ));
 
     if !socket_path.exists() {
         return Err(ChatError::ConnectionRefused(format!(

@@ -452,18 +452,33 @@ fn handle_received_pubkey(
         None => return,
     };
 
-    // TOFU: never overwrite an existing key file. The user must delete it manually to accept a new key.
-    if dest.exists() {
-        print_tofu_rejection(&dest, &incoming_key, &safe_sender, printer);
-        return;
-    }
-
-    if let Err(e) = std::fs::write(&dest, pubkey_bytes) {
-        let _ = printer.print(format!(
-            "{COLOR_SYSTEM}Cannot write pubkey '{}': {e}{COLOR_RESET}",
-            dest.display()
-        ));
-        return;
+    // TOFU: use O_EXCL (create_new) to atomically refuse overwriting an existing key file,
+    // avoiding a TOCTOU race between exists() and write().
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&dest)
+    {
+        Ok(mut file) => {
+            if let Err(e) = std::io::Write::write_all(&mut file, pubkey_bytes) {
+                let _ = printer.print(format!(
+                    "{COLOR_SYSTEM}Cannot write pubkey '{}': {e}{COLOR_RESET}",
+                    dest.display()
+                ));
+                return;
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            print_tofu_rejection(&dest, &incoming_key, &safe_sender, printer);
+            return;
+        }
+        Err(e) => {
+            let _ = printer.print(format!(
+                "{COLOR_SYSTEM}Cannot write pubkey '{}': {e}{COLOR_RESET}",
+                dest.display()
+            ));
+            return;
+        }
     }
 
     let fp = incoming_key.fingerprint(ssh_key::HashAlg::Sha256);

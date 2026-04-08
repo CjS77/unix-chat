@@ -56,6 +56,7 @@ pub fn run(
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
     let username = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
+    let safe_username = config::sanitize_peer_name(&username)?;
 
     permissions::ensure_socket_dir()?;
 
@@ -71,7 +72,9 @@ pub fn run(
             )));
         }
         let ecdh_key = crypto::derive_ecdh_key(&ssh_key_path()?, &peer_pub_path)?;
-        let socket_path = PathBuf::from(format!("{SOCKET_DIR}/e2ee-{username}-{peer_name}.sock"));
+        let socket_path = PathBuf::from(format!(
+            "{SOCKET_DIR}/e2ee-{safe_username}-{peer_name}.sock"
+        ));
         (ecdh_key, socket_path, None)
     } else {
         // Password mode

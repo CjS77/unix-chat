@@ -83,7 +83,7 @@ pub fn generate_session_key(ssh_key_path: &std::path::Path) -> Result<SessionKey
 
 const ECDH_DOMAIN_TAG: &[u8] = b"unix_chat_ecdh_v1";
 
-pub fn openssh_key_to_bytes(private_key: &PrivateKey) -> Result<[u8; 32]> {
+pub(crate) fn openssh_key_to_bytes(private_key: &PrivateKey) -> Result<Zeroizing<[u8; 32]>> {
     let ed25519_keypair = private_key
         .key_data()
         .ed25519()
@@ -93,12 +93,12 @@ pub fn openssh_key_to_bytes(private_key: &PrivateKey) -> Result<[u8; 32]> {
     // follow the Ed25519 spec: SHA-512 hash the seed, then clamp the lower 32 bytes.
     let seed = ed25519_keypair.private.to_bytes();
     let hash = Sha512::digest(seed);
-    let mut scalar_bytes = [0u8; 32];
+    let mut scalar_bytes = Zeroizing::new([0u8; 32]);
     scalar_bytes.copy_from_slice(&hash[..32]);
-    Ok(scalar::clamp_integer(scalar_bytes))
+    Ok(Zeroizing::new(scalar::clamp_integer(*scalar_bytes)))
 }
 
-pub fn openssh_pubkey_to_point(pubkey: &PublicKey) -> Result<MontgomeryPoint> {
+pub(crate) fn openssh_pubkey_to_point(pubkey: &PublicKey) -> Result<MontgomeryPoint> {
     let ed25519_pub = pubkey
         .key_data()
         .ed25519()
@@ -130,7 +130,7 @@ pub fn derive_ecdh_key(own_key_path: &Path, peer_pubkey_path: &Path) -> Result<[
         ))
     })?;
 
-    let key = openssh_key_to_bytes(&private_key)?;
+    let scalar = openssh_key_to_bytes(&private_key)?;
 
     // Parse peer's public key
     let pub_key = ssh_key::PublicKey::read_openssh_file(peer_pubkey_path).map_err(|e| {
@@ -143,11 +143,32 @@ pub fn derive_ecdh_key(own_key_path: &Path, peer_pubkey_path: &Path) -> Result<[
     let montgomery = openssh_pubkey_to_point(&pub_key)?;
 
     // ECDH: shared_point = montgomery_point * scalar
-    let shared_point = montgomery.mul_clamped(key);
+    let shared_point = montgomery.mul_clamped(*scalar);
 
-    // Derive shared secret: SHA-256(DOMAIN_TAG || shared_point)
+    // Reject the identity point (all zeros) — indicates a low-order peer public key
+    if shared_point.0 == [0u8; 32] {
+        return Err(ChatError::Crypto(
+            "ECDH produced identity point — peer public key is invalid (low-order)".into(),
+        ));
+    }
+
+    // Derive our own public key bytes for inclusion in the KDF
+    let own_pub_key = private_key.public_key();
+    let own_pub_ed = own_pub_key
+        .key_data()
+        .ed25519()
+        .ok_or_else(|| ChatError::Crypto("Own SSH key is not Ed25519".into()))?;
+    let peer_pub_ed = pub_key
+        .key_data()
+        .ed25519()
+        .ok_or_else(|| ChatError::Crypto("Peer key is not Ed25519".into()))?;
+
+    // Derive shared secret: SHA-256(DOMAIN_TAG || our_pubkey || peer_pubkey || shared_point)
+    // Including both public keys binds the derived key to the specific participants.
     let mut hasher = Sha256::new();
     hasher.update(ECDH_DOMAIN_TAG);
+    hasher.update(own_pub_ed.as_ref());
+    hasher.update(peer_pub_ed.as_ref());
     hasher.update(shared_point.0);
     let result = hasher.finalize();
 

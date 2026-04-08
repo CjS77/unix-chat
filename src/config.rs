@@ -35,9 +35,9 @@ pub fn sanitize_peer_name(peer: &str) -> Result<String> {
             "Peer name '{peer}' contains invalid characters (allowed: A-Z, a-z, 0-9, _ - .)"
         )));
     }
-    if peer == "." || peer == ".." || peer.starts_with('.') {
+    if peer.starts_with('.') || peer.ends_with('.') || peer.contains("..") {
         return Err(ChatError::Config(format!(
-            "Peer name '{peer}' must not start with '.'"
+            "Peer name '{peer}' must not start/end with '.' or contain '..'"
         )));
     }
     Ok(peer.to_string())
