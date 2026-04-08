@@ -1,5 +1,5 @@
 use crate::chat_loop;
-use crate::config::{SOCKET_DIR, ssh_key_path};
+use crate::config::{self, SOCKET_DIR, ssh_key_path};
 use crate::crypto;
 use crate::error::{ChatError, IoResultExt, Result};
 use crate::permissions;
@@ -51,42 +51,60 @@ fn safe_remove_socket(path: &PathBuf) -> Result<()> {
 pub fn run(
     password: Option<&str>,
     topic: &Topic,
-    world: bool,
+    peer: Option<&str>,
     max_connections: usize,
     shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
     let username = std::env::var("USER").unwrap_or_else(|_| "unknown".into());
-    let session_key = crypto::generate_session_key(&ssh_key_path()?)?;
+    let safe_username = config::sanitize_peer_name(&username)?;
 
     permissions::ensure_socket_dir()?;
 
-    let socket_path = PathBuf::from(format!("{SOCKET_DIR}/{topic}.sock"));
-    safe_remove_socket(&socket_path)?;
-
-    // Publish password-protected session key if requested
-    let key_enc_path = if let Some(pwd) = password {
-        let path = PathBuf::from(format!("{SOCKET_DIR}/{topic}.key.enc"));
-        let wrapped = crypto::wrap_key_with_password(&session_key, pwd)?;
-        let mode = if world { 0o666 } else { 0o660 };
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(mode)
-            .open(&path)
-            .io_path_context(&path, "writing encrypted session key to")?;
-        file.write_all(wrapped.as_bytes())
-            .io_path_context(&path, "writing encrypted session key to")?;
-        // Set group ownership (permissions already correct from open)
-        permissions::set_socket_permissions(&path, world)?;
-        println!(
-            "Session key published (password-protected) at {}",
-            path.display()
-        );
-        Some(path)
+    let (key, socket_path, key_enc_path) = if let Some(peer_name) = peer {
+        // ECDH mode: derive shared key from own private key + peer's public key
+        let peer_pub_path = config::peer_pubkey_path(peer_name)?;
+        if !peer_pub_path.exists() {
+            return Err(ChatError::KeyNotFound(format!(
+                "Public key for '{peer_name}' not found at {}.\n  \
+                 Ask {peer_name} to broadcast their key with /pubkey-broadcast, \
+                 or manually copy their public key there.",
+                peer_pub_path.display()
+            )));
+        }
+        let ecdh_key = crypto::derive_ecdh_key(&ssh_key_path()?, &peer_pub_path)?;
+        let socket_path = PathBuf::from(format!(
+            "{SOCKET_DIR}/e2ee-{safe_username}-{peer_name}.sock"
+        ));
+        (ecdh_key, socket_path, None)
     } else {
-        None
+        // Password mode
+        let session_key = crypto::generate_session_key(&ssh_key_path()?)?;
+        let socket_path = PathBuf::from(format!("{SOCKET_DIR}/{topic}.sock"));
+        let key_enc_path = if let Some(pwd) = password {
+            let path = PathBuf::from(format!("{SOCKET_DIR}/{topic}.key.enc"));
+            let wrapped = crypto::wrap_key_with_password(&session_key, pwd)?;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o660)
+                .open(&path)
+                .io_path_context(&path, "writing encrypted session key to")?;
+            file.write_all(wrapped.as_bytes())
+                .io_path_context(&path, "writing encrypted session key to")?;
+            permissions::set_socket_permissions(&path)?;
+            println!(
+                "Session key published (password-protected) at {}",
+                path.display()
+            );
+            Some(path)
+        } else {
+            None
+        };
+        (session_key.key, socket_path, key_enc_path)
     };
+
+    safe_remove_socket(&socket_path)?;
 
     let _guard = ServerGuard {
         socket_path: socket_path.clone(),
@@ -98,7 +116,7 @@ pub fn run(
     listener
         .set_nonblocking(true)
         .io_context("setting server socket to non-blocking")?;
-    permissions::set_socket_permissions(&socket_path, world)?;
+    permissions::set_socket_permissions(&socket_path)?;
     println!("Chat server started on {}", socket_path.display());
     println!("Waiting for connections...\n");
 
@@ -161,7 +179,7 @@ pub fn run(
     // Server operator enters the same chat loop as any client.
     chat_loop::run(
         operator_stream,
-        &session_key.key,
+        &key,
         &username,
         topic.as_str(),
         Arc::clone(&shutdown),

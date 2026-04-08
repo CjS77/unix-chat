@@ -1,7 +1,7 @@
 const COLOR_SYSTEM: &str = "\x1b[33m";
 const COLOR_RESET: &str = "\x1b[0m";
 
-pub const SLASH_COMMANDS: &[&str] = &["/help", "/quit", "/share ", "/whoami"];
+pub const SLASH_COMMANDS: &[&str] = &["/help", "/pubkey-broadcast", "/quit", "/share ", "/whoami"];
 
 /// Result of executing a slash command.
 pub enum Action {
@@ -13,6 +13,8 @@ pub enum Action {
     Quit,
     /// Share a file with the given path.
     ShareFile(String),
+    /// Broadcast own public key to all peers.
+    BroadcastPubkey,
 }
 
 /// Try to handle `line` as a slash command.
@@ -31,10 +33,11 @@ fn execute_slash_command(input: &str, username: &str) -> Action {
     match command {
         "/help" => {
             println!("{COLOR_SYSTEM}Available commands:");
-            println!("  /help            - Show this help message");
-            println!("  /share <file>    - Share a file with the chat");
-            println!("  /whoami          - Print your username");
-            println!("  /quit            - Exit the chat{COLOR_RESET}");
+            println!("  /help             - Show this help message");
+            println!("  /pubkey-broadcast - Broadcast your public key to all peers");
+            println!("  /share <file>     - Share a file with the chat");
+            println!("  /whoami           - Print your username");
+            println!("  /quit             - Exit the chat{COLOR_RESET}");
             Action::Handled
         }
         "/share" => {
@@ -50,6 +53,7 @@ fn execute_slash_command(input: &str, username: &str) -> Action {
             println!("{COLOR_SYSTEM}{username}{COLOR_RESET}");
             Action::Handled
         }
+        "/pubkey-broadcast" => Action::BroadcastPubkey,
         "/quit" => {
             println!("{COLOR_SYSTEM}Goodbye!{COLOR_RESET}");
             Action::Quit

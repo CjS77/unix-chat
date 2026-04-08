@@ -23,4 +23,6 @@ rand = "0.9"
 rpassword = "5"
 rustyline = "15"
 sha2 = "0.10"
+curve25519-dalek = "4"
+ssh-key = { version = "0.6", features = ["ed25519"] }
 zeroize = { version = "1", features = ["derive"] }

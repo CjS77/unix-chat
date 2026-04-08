@@ -1,8 +1,14 @@
+use std::path::Path;
+
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead};
+use curve25519_dalek::MontgomeryPoint;
+use curve25519_dalek::edwards::CompressedEdwardsY;
+use curve25519_dalek::scalar;
 use hkdf::Hkdf;
 use hmac::Hmac;
 use rand::RngCore;
-use sha2::Sha256;
+use sha2::{Digest, Sha256, Sha512};
+use ssh_key::{PrivateKey, PublicKey};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::error::{ChatError, Result};
@@ -73,6 +79,109 @@ pub fn generate_session_key(ssh_key_path: &std::path::Path) -> Result<SessionKey
         .map_err(|e| ChatError::Crypto(format!("HKDF expansion failed: {e}")))?;
 
     Ok(SessionKey { key, salt })
+}
+
+const ECDH_DOMAIN_TAG: &[u8] = b"unix_chat_ecdh_v1";
+
+pub(crate) fn openssh_key_to_bytes(private_key: &PrivateKey) -> Result<Zeroizing<[u8; 32]>> {
+    let ed25519_keypair = private_key
+        .key_data()
+        .ed25519()
+        .ok_or_else(|| ChatError::Crypto("SSH key is not Ed25519".into()))?;
+
+    // Ed25519 private keys are seeds. To convert to an X25519 scalar we must
+    // follow the Ed25519 spec: SHA-512 hash the seed, then clamp the lower 32 bytes.
+    let seed = ed25519_keypair.private.to_bytes();
+    let hash = Sha512::digest(seed);
+    let mut scalar_bytes = Zeroizing::new([0u8; 32]);
+    scalar_bytes.copy_from_slice(&hash[..32]);
+    Ok(Zeroizing::new(scalar::clamp_integer(*scalar_bytes)))
+}
+
+pub(crate) fn openssh_pubkey_to_point(pubkey: &PublicKey) -> Result<MontgomeryPoint> {
+    let ed25519_pub = pubkey
+        .key_data()
+        .ed25519()
+        .ok_or_else(|| ChatError::Crypto("Peer key is not Ed25519".into()))?;
+
+    // Convert Edwards point to Montgomery form for X25519-style ECDH
+    let compressed = CompressedEdwardsY::from_slice(ed25519_pub.as_ref())
+        .map_err(|e| ChatError::Crypto(format!("Invalid peer public key point: {e}")))?;
+    let edwards_point = compressed
+        .decompress()
+        .ok_or_else(|| ChatError::Crypto("Peer public key is not a valid curve point".into()))?;
+    let montgomery = edwards_point.to_montgomery();
+    Ok(montgomery)
+}
+
+/// Derive a shared encryption key via ECDH from our Ed25519 private key and a peer's public key.
+///
+/// Algorithm:
+/// 1. Parse our SSH private key, extract Ed25519 seed, derive X25519 scalar
+/// 2. Parse peer's SSH public key, convert Ed25519 point to Montgomery form
+/// 3. Compute shared point: scalar * montgomery_point
+/// 4. Derive key: SHA-256(DOMAIN_TAG || shared_point || Pa || Pb)
+pub fn derive_ecdh_key(own_key_path: &Path, peer_pubkey_path: &Path) -> Result<[u8; KEY_LEN]> {
+    // Parse our private key and extract the Ed25519 seed
+    let private_key = ssh_key::PrivateKey::read_openssh_file(own_key_path).map_err(|e| {
+        ChatError::Crypto(format!(
+            "Failed to parse SSH private key '{}': {e}",
+            own_key_path.display()
+        ))
+    })?;
+
+    let scalar = openssh_key_to_bytes(&private_key)?;
+
+    // Parse peer's public key
+    let pub_key = ssh_key::PublicKey::read_openssh_file(peer_pubkey_path).map_err(|e| {
+        ChatError::Crypto(format!(
+            "Failed to parse peer public key '{}': {e}",
+            peer_pubkey_path.display()
+        ))
+    })?;
+
+    let montgomery = openssh_pubkey_to_point(&pub_key)?;
+
+    // ECDH: shared_point = montgomery_point * scalar
+    let shared_point = montgomery.mul_clamped(*scalar);
+
+    // Reject the identity point (all zeros) — indicates a low-order peer public key
+    if shared_point.0 == [0u8; 32] {
+        return Err(ChatError::Crypto(
+            "ECDH produced identity point — peer public key is invalid (low-order)".into(),
+        ));
+    }
+
+    // Derive our own public key bytes for inclusion in the KDF
+    let own_pub_key = private_key.public_key();
+    let own_pub_ed = own_pub_key
+        .key_data()
+        .ed25519()
+        .ok_or_else(|| ChatError::Crypto("Own SSH key is not Ed25519".into()))?;
+    let peer_pub_ed = pub_key
+        .key_data()
+        .ed25519()
+        .ok_or_else(|| ChatError::Crypto("Peer key is not Ed25519".into()))?;
+
+    // Sort public keys so both sides produce the same hash regardless of who is "own" vs "peer".
+    let (first, second) = if own_pub_ed.as_ref() < peer_pub_ed.as_ref() {
+        (own_pub_ed.as_ref(), peer_pub_ed.as_ref())
+    } else {
+        (peer_pub_ed.as_ref(), own_pub_ed.as_ref())
+    };
+
+    // Derive shared secret: SHA-256(DOMAIN_TAG || pubkey_low || pubkey_high || shared_point)
+    // Including both public keys binds the derived key to the specific participants.
+    let mut hasher = Sha256::new();
+    hasher.update(ECDH_DOMAIN_TAG);
+    hasher.update(first);
+    hasher.update(second);
+    hasher.update(shared_point.0);
+    let result = hasher.finalize();
+
+    let mut key = [0u8; KEY_LEN];
+    key.copy_from_slice(&result);
+    Ok(key)
 }
 
 /// Encrypt a message. Plaintext format: username_len (1 byte) || username || message.

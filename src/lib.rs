@@ -5,7 +5,6 @@ pub mod config;
 pub mod crypto;
 pub mod error;
 pub mod init;
-pub mod key_exchange;
 pub mod list;
 pub mod permissions;
 pub mod protocol;
