@@ -120,7 +120,7 @@ pub(crate) fn openssh_pubkey_to_point(pubkey: &PublicKey) -> Result<MontgomeryPo
 /// 1. Parse our SSH private key, extract Ed25519 seed, derive X25519 scalar
 /// 2. Parse peer's SSH public key, convert Ed25519 point to Montgomery form
 /// 3. Compute shared point: scalar * montgomery_point
-/// 4. Derive key: SHA-256(DOMAIN_TAG || shared_point)
+/// 4. Derive key: SHA-256(DOMAIN_TAG || shared_point || Pa || Pb)
 pub fn derive_ecdh_key(own_key_path: &Path, peer_pubkey_path: &Path) -> Result<[u8; KEY_LEN]> {
     // Parse our private key and extract the Ed25519 seed
     let private_key = ssh_key::PrivateKey::read_openssh_file(own_key_path).map_err(|e| {

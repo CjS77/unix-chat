@@ -461,6 +461,8 @@ fn handle_received_pubkey(
     {
         Ok(mut file) => {
             if let Err(e) = std::io::Write::write_all(&mut file, pubkey_bytes) {
+                drop(file);
+                let _ = std::fs::remove_file(&dest);
                 let _ = printer.print(format!(
                     "{COLOR_SYSTEM}Cannot write pubkey '{}': {e}{COLOR_RESET}",
                     dest.display()
